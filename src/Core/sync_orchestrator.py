@@ -34,7 +34,7 @@ METAFIELD_VALUE_TYPE_URL = "url"
 class SyncOrchestrator:
     """编排从API获取产品并同步到Shopify的整个流程。"""
 
-    PRODUCTS_PER_BRAND_TARGET = 50 # 每个品牌的目标产品数量
+    PRODUCTS_PER_BRAND_TARGET = 75 # 每个品牌的目标产品数量
     API_FETCH_LIMIT_MULTIPLIER = 1.5 # 获取API产品时，请求数量的乘数，以便有足够产品筛选
 
     def __init__(self, dry_run: bool = False): # 添加 dry_run 参数

@@ -27,12 +27,19 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--brand", 
-        help=f"Specify the single brand name to sync. Available brands: {list(BRAND_CONFIG.keys())}"
+        help=f"Specify the single brand name to sync. Available brands (overall): {list(BRAND_CONFIG.keys())}"
     )
     group.add_argument(
         "--all-brands", 
         action="store_true", 
-        help="Sync all brands defined in BRAND_CONFIG."
+        help="Sync all brands defined in BRAND_CONFIG (potentially filtered by --api-source)."
+    )
+
+    parser.add_argument(
+        "--api-source",
+        choices=['cj', 'pepperjam', 'all'],
+        default='all',
+        help="Specify the API source to sync from: 'cj', 'pepperjam', or 'all' (default: all)."
     )
 
     parser.add_argument(
@@ -125,54 +132,88 @@ def main():
     brands_to_sync = []
     keywords_for_sync = {}
 
+    # 1. 根据 API source 筛选可用品牌
+    available_brands_config = {}
+    if args.api_source == 'cj':
+        available_brands_config = {name: conf for name, conf in BRAND_CONFIG.items() if conf['api_type'] == 'cj'}
+        logger.info("根据 API source 'cj' 进行筛选。")
+    elif args.api_source == 'pepperjam':
+        available_brands_config = {name: conf for name, conf in BRAND_CONFIG.items() if conf['api_type'] == 'pepperjam'}
+        logger.info("根据 API source 'pepperjam' 进行筛选。")
+    else: # 'all'
+        available_brands_config = BRAND_CONFIG
+        logger.info("API source 为 'all'，将考虑所有已配置的品牌。")
+
+    if not available_brands_config:
+        logger.warning(f"根据 API source '{args.api_source}' 筛选后，没有可用的品牌。退出。")
+        sys.exit(0)
+
+    # 2. 根据 --brand 或 --all-brands 进一步确定同步列表
     if args.brand:
-        if args.brand in BRAND_CONFIG:
-            brands_to_sync.append(args.brand)
-            # 如果为单个品牌指定了关键词
-            if args.keywords:
-                 keywords_for_sync[args.brand] = args.keywords
-            # 注意：--keywords-json 在指定单个品牌时通常不适用，但可以允许它覆盖
-            if args.keywords_json:
-                 logger.warning("同时指定了 --brand 和 --keywords-json。将使用 JSON 文件中为该品牌定义的关键词 (如果有)。")
-                 try:
-                     import json
-                     with open(args.keywords_json, 'r') as f:
-                         json_keywords = json.load(f)
-                         if args.brand in json_keywords:
-                             keywords_for_sync[args.brand] = json_keywords[args.brand]
-                         elif args.brand in keywords_for_sync: # 如果JSON中没有，但命令行有，则保留命令行的
-                             pass 
-                         else: # JSON 和命令行都没有
-                             keywords_for_sync.pop(args.brand, None)
-                 except Exception as json_e:
-                     logger.error(f"无法读取或解析关键词 JSON 文件 '{args.keywords_json}': {json_e}", exc_info=True)
-                     sys.exit(1)
+        if args.brand in BRAND_CONFIG: # 首先检查是否是已知的品牌
+            if args.brand in available_brands_config: # 然后检查是否符合 API source
+                brands_to_sync.append(args.brand)
+                if args.keywords:
+                    keywords_for_sync[args.brand] = args.keywords
+                if args.keywords_json:
+                    logger.warning("同时指定了 --brand 和 --keywords-json。将使用 JSON 文件中为该品牌定义的关键词 (如果有)。")
+                    try:
+                        import json
+                        with open(args.keywords_json, 'r') as f:
+                            json_keywords = json.load(f)
+                            if args.brand in json_keywords:
+                                keywords_for_sync[args.brand] = json_keywords[args.brand]
+                            # elif args.brand in keywords_for_sync: # 保留命令行提供的，如果JSON中没有
+                            #     pass 
+                            # else: # JSON 和命令行都没有，则移除 (如果之前已通过通用keywords设置)
+                            #     keywords_for_sync.pop(args.brand, None)
+                    except Exception as json_e:
+                        logger.error(f"无法读取或解析关键词 JSON 文件 '{args.keywords_json}': {json_e}", exc_info=True)
+                        sys.exit(1)
+            else:
+                logger.error(f"指定的品牌 '{args.brand}' (API类型: {BRAND_CONFIG[args.brand]['api_type']}) 与指定的 API source '{args.api_source}' 不符。")
+                logger.info(f"符合 API source '{args.api_source}' 的可用品牌有: {list(available_brands_config.keys())}")
+                sys.exit(1)
         else:
-            logger.error(f"指定的品牌 '{args.brand}' 未在 BRAND_CONFIG 中找到。可用品牌: {list(BRAND_CONFIG.keys())}")
+            logger.error(f"指定的品牌 '{args.brand}' 未在 BRAND_CONFIG 中找到。所有已配置品牌: {list(BRAND_CONFIG.keys())}")
             sys.exit(1)
             
     elif args.all_brands:
-        brands_to_sync = list(BRAND_CONFIG.keys())
-        # 如果为所有品牌指定了通用关键词
-        if args.keywords:
-            for brand in brands_to_sync:
-                keywords_for_sync[brand] = args.keywords
-        # 如果提供了 JSON 文件，它将覆盖通用关键词
+        brands_to_sync = list(available_brands_config.keys())
+        if args.keywords: # 通用关键词应用于所有从指定source选出的品牌
+            for brand_name in brands_to_sync:
+                keywords_for_sync[brand_name] = args.keywords
         if args.keywords_json:
             try:
                 import json
                 with open(args.keywords_json, 'r') as f:
                     json_keywords = json.load(f)
-                    # 合并 JSON 关键词，覆盖通用关键词
-                    keywords_for_sync.update(json_keywords) 
+                    # keywords_for_sync.update(json_keywords) # 这会覆盖所有，需要筛选
+                    for brand_name, kws in json_keywords.items():
+                        if brand_name in available_brands_config: #只更新筛选后列表中的品牌
+                             keywords_for_sync[brand_name] = kws
             except Exception as json_e:
                 logger.error(f"无法读取或解析关键词 JSON 文件 '{args.keywords_json}': {json_e}", exc_info=True)
                 sys.exit(1)
                 
     else:
-        # 默认行为：同步所有品牌，不使用关键词
-        logger.info("未指定 --brand 或 --all-brands，将默认同步所有已配置的品牌，不使用关键词过滤。")
-        brands_to_sync = list(BRAND_CONFIG.keys())
+        # 默认行为：同步由 API source 筛选后的所有品牌
+        brands_to_sync = list(available_brands_config.keys())
+        logger.info(f"未指定 --brand 或 --all-brands。将默认同步 API source '{args.api_source}' 中的所有品牌: {brands_to_sync}")
+        # 默认情况下，不使用关键词，除非通过 keywords.json 指定
+        if args.keywords:
+             logger.warning("检测到 --keywords 参数，但未指定 --brand 或 --all-brands。此处的 --keywords 将被忽略，除非通过 --keywords-json 为特定品牌指定。")
+        if args.keywords_json:
+            try:
+                import json
+                with open(args.keywords_json, 'r') as f:
+                    json_keywords = json.load(f)
+                    for brand_name, kws in json_keywords.items():
+                        if brand_name in available_brands_config: 
+                             keywords_for_sync[brand_name] = kws
+            except Exception as json_e:
+                logger.error(f"无法读取或解析关键词 JSON 文件 '{args.keywords_json}': {json_e}", exc_info=True)
+                sys.exit(1)
 
     # 执行同步
     if not brands_to_sync:

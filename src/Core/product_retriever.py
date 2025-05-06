@@ -37,67 +37,61 @@ class ProductRetriever:
         if not cj_search_products:
             logger.warning("CJ 产品搜索功能不可用。")
 
-    def _cj_product_to_unified(self, cj_product: Dict[str, Any], brand_name: str) -> Optional[UnifiedProduct]:
-        """将单个 CJ API 产品条目转换为 UnifiedProduct 对象。"""
-        try:
-            price_info = cj_product.get('price', {})
-            sale_price_info = cj_product.get('salePrice')
-            
-            # 确保价格是数字
-            price_amount = None
-            if price_info.get('amount') is not None:
-                try:
-                    price_amount = float(price_info['amount'])
-                except (ValueError, TypeError):
-                    logger.warning(f"CJ 产品价格格式无效: {price_info.get('amount')} (ID: {cj_product.get('id')})")
-                    return None # 或者跳过这个产品
-            else:
-                logger.warning(f"CJ 产品缺少价格信息 (ID: {cj_product.get('id')})")
-                return None # 必需字段缺失
-
-            sale_price_amount = None
-            if sale_price_info and sale_price_info.get('amount') is not None:
-                try:
-                    sale_price_amount = float(sale_price_info['amount'])
-                except (ValueError, TypeError):
-                    logger.warning(f"CJ 产品促销价格格式无效: {sale_price_info.get('amount')} (ID: {cj_product.get('id')})")
-                    # 促销价是可选的，可以继续
-
-            # 有效性检查
-            if not cj_product.get('link'):
-                logger.warning(f"CJ 产品缺少 link (ID: {cj_product.get('id')})")
-                return None
-            if not cj_product.get('imageLink'):
-                logger.warning(f"CJ 产品缺少 imageLink (ID: {cj_product.get('id')})")
-                # 根据需求决定是否跳过，图片通常很重要
-                return None 
-
-            # 获取商品分类
-            categories = []
-            if cj_product.get('productType') and isinstance(cj_product['productType'], list):
-                categories.extend(cj_product['productType'])
-            if cj_product.get('googleProductCategory') and cj_product['googleProductCategory'].get('name'):
-                categories.append(cj_product['googleProductCategory']['name'])
-            
-            return UnifiedProduct(
-                source_api='cj',
-                source_product_id=str(cj_product.get('id')),
-                brand_name=cj_product.get('advertiserName', brand_name), # API可能提供，否则用配置的
-                source_advertiser_id=str(cj_product.get('advertiserId')),
-                title=cj_product.get('title', 'N/A'),
-                description=cj_product.get('description', ''),
-                price=price_amount,
-                currency=price_info.get('currency', 'USD'),
-                product_url=cj_product['link'],  # 直接使用link字段
-                image_url=cj_product['imageLink'],
-                availability=cj_product.get('availability', 'in stock').lower() == 'in stock', # 假设 'in stock' 表示有货
-                sale_price=sale_price_amount,
-                categories=categories,  # 使用提取的分类
-                raw_data=cj_product
-            )
-        except Exception as e:
-            logger.error(f"转换 CJ 产品 (ID: {cj_product.get('id')}) 为 UnifiedProduct 时失败: {e}", exc_info=True)
+    def _cj_product_to_unified(self, cj_product: Dict[str, Any], brand_name: str, source_api_name: str) -> Optional[UnifiedProduct]:
+        """将单个CJ产品字典转换为UnifiedProduct对象。"""
+        if not cj_product:
             return None
+
+        # 新增字段校验
+        required_fields = ['link', 'imageLink', 'title']
+        for field in required_fields:
+            if not cj_product.get(field):
+                logger.warning(f"CJ 产品缺少必需字段 '{field}' 或字段为空 (ID: {cj_product.get('id', 'N/A')}, 标题: {cj_product.get('title', 'N/A')}). 跳过此产品.")
+                return None
+
+        # 校验价格不为 '0.00'
+        price_info = cj_product.get('price', {})
+        price_amount_str = price_info.get('amount')
+        if price_amount_str == "0.00":
+            logger.warning(f"CJ 产品的价格为 '0.00' (ID: {cj_product.get('id', 'N/A')}, 标题: {cj_product.get('title', 'N/A')}). 跳过此产品.")
+            return None
+
+        # 原有的 imageLink 检查仍然保留，作为双重保险或处理空字符串的情况 (尽管上面的检查也覆盖了空字符串)
+        if not cj_product.get('imageLink'): # 确保 imageLink 存在
+            logger.warning(f"CJ 产品缺少 imageLink (ID: {cj_product.get('id')}, 标题: {cj_product.get('title')}). 跳过此产品.")
+            return None
+        
+        # 如果 advertiserId 或 id 缺失，则跳过，这些是 SKU 生成所必需的
+        if not cj_product.get('advertiserId'):
+            logger.warning(f"CJ 产品缺少 advertiserId (ID: {cj_product.get('id')})")
+            return None
+        if not cj_product.get('id'):
+            logger.warning(f"CJ 产品缺少 id (ID: {cj_product.get('id')})")
+            return None
+
+        # 获取商品分类
+        categories = []
+        if cj_product.get('productType') and isinstance(cj_product['productType'], list):
+            categories.extend(cj_product['productType'])
+        if cj_product.get('googleProductCategory') and cj_product['googleProductCategory'].get('name'):
+            categories.append(cj_product['googleProductCategory']['name'])
+        
+        return UnifiedProduct(
+            source_api=source_api_name,
+            source_product_id=str(cj_product.get('id')),
+            brand_name=cj_product.get('advertiserName', brand_name), # API可能提供，否则用配置的
+            source_advertiser_id=str(cj_product.get('advertiserId')),
+            title=cj_product.get('title', 'N/A'),
+            description=cj_product.get('description', ''),
+            price=float(price_info['amount']),
+            currency=price_info.get('currency', 'USD'),
+            product_url=cj_product['link'],  # 直接使用link字段
+            image_url=cj_product['imageLink'],
+            availability=cj_product.get('availability', 'in stock').lower() == 'in stock', # 假设 'in stock' 表示有货
+            sale_price=None,
+            categories=categories,  # 使用提取的分类
+            raw_data=cj_product
+        )
 
     def fetch_cj_products(self, advertiser_id: str, brand_name: str, keywords: str, limit: int = 70) -> List[UnifiedProduct]:
         """从 CJ API 获取特定广告商的产品，并按关键词过滤（如果API支持或客户端过滤）。"""
@@ -129,7 +123,7 @@ class ProductRetriever:
                         if keywords_lower not in title and keywords_lower not in description:
                             continue  # 跳过不匹配关键词的产品
                     
-                    unified_prod = self._cj_product_to_unified(cj_prod_data, brand_name)
+                    unified_prod = self._cj_product_to_unified(cj_prod_data, brand_name, 'cj')
                     if unified_prod:
                         unified_products.append(unified_prod)
                         count += 1
