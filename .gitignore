@@ -10,6 +10,7 @@ Shopify_Product_Sync_Task.md
 __pycache__/
 *.py[cod]
 *$py.class
+TASK_Loguru_Refactor.md
 
 # C extensions
 *.so

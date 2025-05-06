@@ -1,9 +1,8 @@
 import argparse
 import os
 import sys
-import logging # 导入 logging 模块
-from datetime import datetime # 导入 datetime 用于生成时间戳
 from pathlib import Path # 导入 Path 处理文件路径
+from loguru import logger # 导入 loguru logger
 
 # 确保 src 目录在 Python 路径中，以便可以导入 Core, Shopify 等模块
 # 这在使用 vscode-remote 或类似环境时可能需要
@@ -16,7 +15,7 @@ try:
     from Core.sync_orchestrator import SyncOrchestrator, BRAND_CONFIG
 except ImportError as e:
     # 在此处使用 print 因为 logger 可能尚未配置
-    print(f"CRITICAL: 无法导入核心模块 (SyncOrchestrator, BRAND_CONFIG)。请确保项目结构正确且依赖已安装。ImportError: {e}")
+    logger.critical(f"CRITICAL: 无法导入核心模块 (SyncOrchestrator, BRAND_CONFIG)。请确保项目结构正确且依赖已安装。ImportError: {e}")
     sys.exit(1)
 
 def main():
@@ -61,39 +60,42 @@ def main():
 
     args = parser.parse_args()
 
-    # 配置日志记录 - 改进为在所有模式下都保存日志到文件
-    log_handlers = [logging.StreamHandler(sys.stdout)]  # 总是将日志输出到控制台
-    log_level = logging.DEBUG if args.verbose else logging.INFO
-    
-    # 创建logs目录（如果不存在）
-    logs_dir = Path(project_root) / "logs"
-    logs_dir.mkdir(exist_ok=True)
-    
-    # 生成带时间戳的日志文件名，根据模式区分前缀
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_prefix = "dry_run" if args.dry_run else "sync"
-    log_filename = logs_dir / f"{log_prefix}_{timestamp}.log"
-    
-    # 创建文件处理器并添加到处理器列表
-    file_handler = logging.FileHandler(log_filename, encoding='utf-8')
-    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(funcName)s - %(message)s')
-    file_handler.setFormatter(log_formatter)
-    log_handlers.append(file_handler)
-    
-    # 配置日志系统
-    logging.basicConfig(
-        level=log_level,
-        format='%(asctime)s - %(levelname)s - %(name)s - %(funcName)s - %(message)s',
-        handlers=log_handlers
+    # 配置 Loguru 日志记录
+    logger.remove() # 移除默认处理器
+
+    # 控制台 sink
+    log_level_console = "DEBUG" if args.verbose else "INFO"
+    logger.add(
+        sys.stdout, 
+        level=log_level_console, 
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        colorize=True
     )
     
-    # 获取根日志记录器
-    logger = logging.getLogger(__name__)
+    # 文件 sink
+    logs_dir = Path(project_root) / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    log_prefix = "dry_run" if args.dry_run else "sync"
+    # Loguru 会在文件名中的 {time} 处自动插入时间戳
+    log_file_path_template = logs_dir / f"{log_prefix}_{{time:YYYYMMDD_HHmmss}}.log" 
+    
+    # 添加文件处理器
+    # Loguru 的 logger.add 返回处理器ID，如果需要可以保存，但通常不需要直接操作处理器
+    # 为了获取实际生成的文件名，我们可以在日志消息中引用模板，或在首次写入后查找
+    logger.add(
+        log_file_path_template, 
+        level="DEBUG", # 文件日志记录所有 DEBUG 级别信息
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+        rotation="10 MB",
+        retention="7 days",
+        encoding='utf-8',
+        enqueue=True # 异步写入
+    )
     
     # 记录日志配置信息
     logger.info(f"启动 Shopify 产品同步程序 ({'DRY RUN 模式' if args.dry_run else '正常模式'})")
-    logger.info(f"日志级别: {logging.getLevelName(log_level)}")
-    logger.info(f"日志将保存到文件: {log_filename}")
+    logger.info(f"控制台日志级别: {log_level_console}")
+    logger.info(f"文件日志将保存到 (模板): {log_file_path_template}") # 记录模板路径
 
     # 如果指定了 verbose，记录详细日志模式已启用
     if args.verbose:
@@ -116,7 +118,7 @@ def main():
         logger.info(f"初始化 SyncOrchestrator... (Dry Run: {args.dry_run})")
         orchestrator = SyncOrchestrator(dry_run=args.dry_run)
     except Exception as init_e:
-        logger.error("初始化 SyncOrchestrator 失败。", exc_info=True)
+        logger.error(f"初始化 SyncOrchestrator 失败: {init_e}", exc_info=True) # Loguru 自动处理 exc_info
         sys.exit(1)
 
     # 确定要同步的品牌和关键词
@@ -143,7 +145,7 @@ def main():
                          else: # JSON 和命令行都没有
                              keywords_for_sync.pop(args.brand, None)
                  except Exception as json_e:
-                     logger.error(f"无法读取或解析关键词 JSON 文件 '{args.keywords_json}'", exc_info=True)
+                     logger.error(f"无法读取或解析关键词 JSON 文件 '{args.keywords_json}': {json_e}", exc_info=True)
                      sys.exit(1)
         else:
             logger.error(f"指定的品牌 '{args.brand}' 未在 BRAND_CONFIG 中找到。可用品牌: {list(BRAND_CONFIG.keys())}")
@@ -164,7 +166,7 @@ def main():
                     # 合并 JSON 关键词，覆盖通用关键词
                     keywords_for_sync.update(json_keywords) 
             except Exception as json_e:
-                logger.error(f"无法读取或解析关键词 JSON 文件 '{args.keywords_json}'", exc_info=True)
+                logger.error(f"无法读取或解析关键词 JSON 文件 '{args.keywords_json}': {json_e}", exc_info=True)
                 sys.exit(1)
                 
     else:
@@ -191,14 +193,14 @@ def main():
         else:
             orchestrator.run_full_sync(keywords_by_brand=keywords_for_sync)
     except Exception as sync_e:
-        logger.error("同步过程中发生未捕获的错误。", exc_info=True)
+        logger.error(f"同步过程中发生未捕获的错误: {sync_e}", exc_info=True)
         sys.exit(1)
     
     logger.info("同步过程执行完毕。")
     
     # 在dry run模式下添加日志文件位置提示
     if args.dry_run:
-        logger.info(f"Dry Run完成，完整日志已保存到: {log_filename}")
+        logger.info(f"Dry Run完成，完整日志已保存到模板路径: {log_file_path_template} (实际文件名会包含时间戳)")
 
 if __name__ == "__main__":
     main() 

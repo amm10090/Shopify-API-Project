@@ -13,19 +13,19 @@ from pathlib import Path
 from datetime import datetime
 import requests
 from dotenv import load_dotenv
-import logging # 确保导入logging
+from loguru import logger # 导入 loguru logger
 
 # 加载环境变量
 load_dotenv()
 
-# 配置日志记录器
-# 日志级别可以通过环境变量 LOG_LEVEL 控制，默认为 INFO
-# 日志格式包含时间、级别、模块名、函数名和消息
-logging.basicConfig(
-    level=os.getenv('LOG_LEVEL', 'INFO').upper(),
-    format='%(asctime)s - %(levelname)s - %(name)s - %(funcName)s - %(message)s'
-)
-logger = logging.getLogger(__name__) # 为当前模块创建一个日志记录器实例
+# 配置日志记录器 - Loguru 在 main.py 中配置，这里不需要单独配置
+# # 日志级别可以通过环境变量 LOG_LEVEL 控制，默认为 INFO
+# # 日志格式包含时间、级别、模块名、函数名和消息
+# logging.basicConfig(
+#     level=os.getenv('LOG_LEVEL', 'INFO').upper(),
+#     format='%(asctime)s - %(levelname)s - %(name)s - %(funcName)s - %(message)s'
+# )
+# logger = logging.getLogger(__name__) # 为当前模块创建一个日志记录器实例
 
 # API配置
 CJ_API_ENDPOINT = os.getenv('CJ_API_ENDPOINT', 'https://ads.api.cj.com/query')

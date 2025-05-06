@@ -1,6 +1,6 @@
 import os
 from typing import List, Dict, Any, Optional
-import logging # 导入 logging
+from loguru import logger # 导入 loguru logger
 import re # 导入 re
 
 from Core.data_models import UnifiedProduct
@@ -43,7 +43,7 @@ class SyncOrchestrator:
         # 将 dry_run 传递给 ShopifyConnector
         self.shopify_connector = ShopifyConnector(dry_run=self.dry_run) 
         self.brand_config = BRAND_CONFIG # 可以考虑从外部文件加载此配置
-        self.logger = logging.getLogger(__name__) # 获取 logger 实例
+        # self.logger = logging.getLogger(__name__) # 获取 logger 实例 - Loguru不需要这个
 
     def _generate_sku(self, brand_name: str, source_api: str, source_product_id: str) -> str:
         """根据品牌名、API来源和API产品ID生成标准化的SKU。"""
@@ -83,10 +83,10 @@ class SyncOrchestrator:
             brand_name (str): 要同步的品牌名称 (必须在 BRAND_CONFIG 中定义)。
             user_keywords_str (Optional[str]): 用户提供的逗号分隔的关键词字符串 (可选)。
         """
-        self.logger.info(f"--- 开始为品牌 '{brand_name}' 同步 (关键词: {user_keywords_str or '无'}) ---")
+        logger.info(f"--- 开始为品牌 '{brand_name}' 同步 (关键词: {user_keywords_str or '无'}) ---")
         
         if brand_name not in self.brand_config:
-            self.logger.error(f"品牌 '{brand_name}' 未在 BRAND_CONFIG 中配置。跳过此品牌。")
+            logger.error(f"品牌 '{brand_name}' 未在 BRAND_CONFIG 中配置。跳过此品牌。")
             return
 
         config = self.brand_config[brand_name]
@@ -121,29 +121,29 @@ class SyncOrchestrator:
                 limit=fetch_limit
             )
         else:
-            self.logger.error(f"未知的 API 类型 '{api_type}' 配置给品牌 '{brand_name}'。")
+            logger.error(f"未知的 API 类型 '{api_type}' 配置给品牌 '{brand_name}'。")
             return
 
         if not raw_api_products:
-            self.logger.warning(f"未能从 API ({api_type}) 获取品牌 '{brand_name}' 的任何产品。结束此品牌的同步。")
+            logger.warning(f"未能从 API ({api_type}) 获取品牌 '{brand_name}' 的任何产品。结束此品牌的同步。")
             return
-        self.logger.info(f"从 API ({api_type}) 为品牌 '{brand_name}' 获取到 {len(raw_api_products)} 个原始产品。")
+        logger.info(f"从 API ({api_type}) 为品牌 '{brand_name}' 获取到 {len(raw_api_products)} 个原始产品。")
 
         # 2. 过滤产品 (有货优先，然后按关键词，最后取目标数量)
         available_products = [p for p in raw_api_products if p.availability]
-        self.logger.info(f"其中 {len(available_products)} 个产品有货。")
+        logger.info(f"其中 {len(available_products)} 个产品有货。")
 
         # 根据用户提供的关键词进行筛选 (如果提供了关键词)
         # _filter_products_by_keywords 会处理空关键词列表的情况
         keyword_filtered_products = self._filter_products_by_keywords(available_products, user_keywords)
         if user_keywords:
-            self.logger.info(f"根据关键词 '{user_keywords_str}' 筛选后剩下 {len(keyword_filtered_products)} 个产品。")
+            logger.info(f"根据关键词 '{user_keywords_str}' 筛选后剩下 {len(keyword_filtered_products)} 个产品。")
         else:
-            self.logger.info("未提供关键词，使用所有有货产品进行下一步。")
+            logger.info("未提供关键词，使用所有有货产品进行下一步。")
 
         # 选择最终要同步的产品列表 (取前N个)
         final_products_to_sync = keyword_filtered_products[:self.PRODUCTS_PER_BRAND_TARGET]
-        self.logger.info(f"最终选择 {len(final_products_to_sync)} 个产品进行 Shopify 同步。")
+        logger.info(f"最终选择 {len(final_products_to_sync)} 个产品进行 Shopify 同步。")
 
         # 3. Shopify 主草稿产品系列管理
         master_collection_title = f"{brand_name} - API Products - Draft"
@@ -152,7 +152,7 @@ class SyncOrchestrator:
         master_collection_handle = re.sub(r'[^a-z0-9-]+', '-', temp_handle)
         master_collection_handle = re.sub(r'-+$', '', master_collection_handle).strip('-')
         
-        self.logger.info(f"确保主草稿产品系列 '{master_collection_title}' (handle: {master_collection_handle}) 存在且为草稿状态...")
+        logger.info(f"确保主草稿产品系列 '{master_collection_title}' (handle: {master_collection_handle}) 存在且为草稿状态...")
         try:
             shopify_master_collection = self.shopify_connector.get_or_create_collection(
                 title=master_collection_title, 
@@ -161,11 +161,11 @@ class SyncOrchestrator:
                 body_html=f"Automatically synced products for {brand_name} from {api_type.upper()} API. For internal review and activation."
             )
             if not shopify_master_collection:
-                self.logger.error(f"无法获取或创建主草稿产品系列 '{master_collection_title}'。中止品牌 '{brand_name}' 的同步。")
+                logger.error(f"无法获取或创建主草稿产品系列 '{master_collection_title}'。中止品牌 '{brand_name}' 的同步。")
                 return
-            self.logger.info(f"主草稿产品系列 '{shopify_master_collection.title}' (ID: {shopify_master_collection.id}) 已就绪。")
+            logger.info(f"主草稿产品系列 '{shopify_master_collection.title}' (ID: {shopify_master_collection.id}) 已就绪。")
         except Exception as e_coll:
-            self.logger.error(f"处理主草稿产品系列时出错: {e_coll}。中止品牌 '{brand_name}' 的同步。", exc_info=True)
+            logger.error(f"处理主草稿产品系列时出错: {e_coll}。中止品牌 '{brand_name}' 的同步。", exc_info=True)
             return
 
         # 4. 获取当前主草稿产品系列中的产品SKU，用于后续比较和清理
@@ -174,9 +174,9 @@ class SyncOrchestrator:
             # 需要一个方法来获取产品系列中的所有产品，然后提取SKU
             # shopify_connector 中可以添加 get_products_in_collection(collection_id)
             # 暂时简化：这个清理逻辑比较复杂，先关注产品创建/更新
-            self.logger.debug("获取主草稿产品系列中现有产品的逻辑尚未完全实现，旧产品清理可能不完整。")
+            logger.debug("获取主草稿产品系列中现有产品的逻辑尚未完全实现，旧产品清理可能不完整。")
         except Exception as e_get_coll_prods:
-            self.logger.warning(f"获取主草稿产品系列中现有产品时出错: {e_get_coll_prods}")
+            logger.warning(f"获取主草稿产品系列中现有产品时出错: {e_get_coll_prods}")
 
         # 5. 同步产品到 Shopify
         synced_skus_this_run = set()
@@ -186,14 +186,14 @@ class SyncOrchestrator:
                 unified_product.sku = self._generate_sku(brand_name, api_type, unified_product.source_product_id)
             synced_skus_this_run.add(unified_product.sku)
 
-            self.logger.info(f"处理产品: {unified_product.title} (SKU: {unified_product.sku})")
+            logger.info(f"处理产品: {unified_product.title} (SKU: {unified_product.sku})")
             try:
                 existing_shopify_product = self.shopify_connector.get_product_by_sku(unified_product.sku)
                 
                 shopify_product_to_manage = None
 
                 if existing_shopify_product:
-                    self.logger.info(f"产品 SKU '{unified_product.sku}' 已存在于 Shopify (ID: {existing_shopify_product.id})。准备更新...")
+                    logger.info(f"产品 SKU '{unified_product.sku}' 已存在于 Shopify (ID: {existing_shopify_product.id})。准备更新...")
                     # 重要: 根据之前的决策，如果产品已被用户激活，我们只更新数据，不改变其状态或集合
                     # ShopifyConnector.update_product 内部不改变已激活产品的状态
                     shopify_product_to_manage = self.shopify_connector.update_product(existing_shopify_product.id, unified_product)
@@ -206,19 +206,19 @@ class SyncOrchestrator:
                             value=unified_product.product_url,
                             value_type=METAFIELD_VALUE_TYPE_URL # 使用 'url' 类型
                         )
-                        self.logger.debug(f"产品 {shopify_product_to_manage.id} 的联盟链接元字段已更新/设置。")
+                        logger.debug(f"产品 {shopify_product_to_manage.id} 的联盟链接元字段已更新/设置。")
                         # 如果产品是草稿状态，确保它在主草稿集合中
                         if shopify_product_to_manage.published_at is None: 
                             self.shopify_connector.add_product_to_collection(shopify_product_to_manage.id, shopify_master_collection.id)
                 else:
-                    self.logger.info(f"产品 SKU '{unified_product.sku}' 不存在于 Shopify。准备创建...")
+                    logger.info(f"产品 SKU '{unified_product.sku}' 不存在于 Shopify。准备创建...")
                     # 新产品默认为 draft 状态，并由 create_product 处理
                     new_shopify_product = self.shopify_connector.create_product(unified_product, status='draft')
                     if new_shopify_product:
                         shopify_product_to_manage = new_shopify_product
                         # 添加到主草稿产品系列
                         self.shopify_connector.add_product_to_collection(new_shopify_product.id, shopify_master_collection.id)
-                        self.logger.info(f"新产品 {new_shopify_product.id} 已添加到主草稿产品系列。")
+                        logger.info(f"新产品 {new_shopify_product.id} 已添加到主草稿产品系列。")
                         # 设置联盟链接元字段
                         self.shopify_connector.set_product_metafield(
                             shopify_product_id=new_shopify_product.id,
@@ -227,14 +227,14 @@ class SyncOrchestrator:
                             value=unified_product.product_url,
                             value_type=METAFIELD_VALUE_TYPE_URL
                         )
-                        self.logger.info(f"新产品 {new_shopify_product.id} 的联盟链接元字段已设置。")
+                        logger.info(f"新产品 {new_shopify_product.id} 的联盟链接元字段已设置。")
                 
                 # 可以在这里记录 unified_product.shopify_product_id (如果需要回写到 UnifiedProduct 对象)
                 if shopify_product_to_manage and hasattr(shopify_product_to_manage, 'id'):
                     unified_product.shopify_product_id = shopify_product_to_manage.id
 
             except Exception as e_prod_sync:
-                self.logger.error(f"同步产品 '{unified_product.title}' (SKU: {unified_product.sku}) 到 Shopify 时发生错误: {e_prod_sync}", exc_info=True)
+                logger.error(f"同步产品 '{unified_product.title}' (SKU: {unified_product.sku}) 到 Shopify 时发生错误: {e_prod_sync}", exc_info=True)
                 # 考虑是否要继续处理下一个产品，或者中止整个品牌的同步
                 continue # 继续处理下一个产品
 
@@ -244,9 +244,9 @@ class SyncOrchestrator:
         # 对于存在于集合中但不在 synced_skus_this_run 中的产品，如果它们是由脚本管理的（例如，是草稿状态），则进行处理。
         # 暂时简化：此步骤的完整实现需要 ShopifyConnector 中有 `get_products_in_collection` 等辅助方法。
         # 我们会在后续迭代中完善此清理逻辑。
-        self.logger.info(f"品牌 '{brand_name}' 的产品同步初步完成。共处理 {len(final_products_to_sync)} 个选定产品。")
-        self.logger.warning(f"清理主草稿产品系列中不再同步的旧产品的逻辑需要进一步实现。")
-        self.logger.info(f"--- 品牌 '{brand_name}' 同步结束 ---")
+        logger.info(f"品牌 '{brand_name}' 的产品同步初步完成。共处理 {len(final_products_to_sync)} 个选定产品。")
+        logger.warning(f"清理主草稿产品系列中不再同步的旧产品的逻辑需要进一步实现。")
+        logger.info(f"--- 品牌 '{brand_name}' 同步结束 ---")
 
     def run_full_sync(self, keywords_by_brand: Optional[Dict[str, str]] = None):
         """
@@ -256,7 +256,7 @@ class SyncOrchestrator:
             keywords_by_brand (Optional[Dict[str, str]]): 一个字典，键是品牌名称，值是该品牌的逗号分隔关键词字符串。
                                                        如果未提供或某品牌无关键词，则该品牌不按关键词筛选。
         """
-        self.logger.info("\n=== 开始对所有已配置品牌进行全面同步 ===")
+        logger.info("\n=== 开始对所有已配置品牌进行全面同步 ===")
         if keywords_by_brand is None:
             keywords_by_brand = {}
         
@@ -264,34 +264,36 @@ class SyncOrchestrator:
             brand_keywords_str = keywords_by_brand.get(brand_name)
             self.run_sync_for_brand(brand_name, user_keywords_str=brand_keywords_str)
         
-        self.logger.info("\n=== 所有品牌全面同步结束 ===")
+        logger.info("\n=== 所有品牌全面同步结束 ===")
 
 # 示例用法 (将在 main.py 中调用)
 if __name__ == '__main__':
     # 配置基本日志记录 (如果直接运行此文件进行测试)
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
+    # logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
     # print("正在初始化 SyncOrchestrator...")
-    logger_main = logging.getLogger(__name__)
-    logger_main.info("正在初始化 SyncOrchestrator 用于测试...")
+    # logger_main = logging.getLogger(__name__)
+    # logger_main.info("正在初始化 SyncOrchestrator 用于测试...")
+    # 使用导入的 logger
+    logger.info("正在初始化 SyncOrchestrator 用于测试 (Loguru)...")
     orchestrator = SyncOrchestrator(dry_run=True) # 测试时默认使用 dry_run
     # print("SyncOrchestrator 初始化完成。")
-    logger_main.info("SyncOrchestrator 初始化完成。")
+    logger.info("SyncOrchestrator 初始化完成。")
 
     # 测试单个品牌同步
     # 示例：同步 Dreo 品牌，使用关键词 "air fryer, smart fan"
     # 需要确保 BRAND_CONFIG 和您的 .env 文件设置正确
     if 'Dreo' in orchestrator.brand_config and os.getenv('CJ_API_TOKEN') and os.getenv('SHOPIFY_STORE_NAME'):
-        logger_main.info("\n--- 测试为品牌 'Dreo' 同步 (Dry Run) ---")
+        logger.info("\n--- 测试为品牌 'Dreo' 同步 (Dry Run) ---")
         orchestrator.run_sync_for_brand('Dreo', user_keywords_str='air fryer, smart fan')
     else:
-        logger_main.warning("跳过 'Dreo' 品牌同步测试，因为未在 BRAND_CONFIG 中配置或缺少必要的 CJ/Shopify 凭证。")
+        logger.warning("跳过 'Dreo' 品牌同步测试，因为未在 BRAND_CONFIG 中配置或缺少必要的 CJ/Shopify 凭证。")
 
     # 示例：同步 Pepperjam 品牌，无关键词 (获取该品牌常规产品)
     if 'PepperjamBrand6200' in orchestrator.brand_config and os.getenv('ASCEND_API_KEY') and os.getenv('SHOPIFY_STORE_NAME'):
-        logger_main.info("\n--- 测试为品牌 'PepperjamBrand6200' 同步 (无关键词, Dry Run) ---")
+        logger.info("\n--- 测试为品牌 'PepperjamBrand6200' 同步 (无关键词, Dry Run) ---")
         orchestrator.run_sync_for_brand('PepperjamBrand6200') # 无关键词
     else:
-        logger_main.warning("跳过 'PepperjamBrand6200' 品牌同步测试，因为未在 BRAND_CONFIG 中配置或缺少必要的 Pepperjam/Shopify 凭证。")
+        logger.warning("跳过 'PepperjamBrand6200' 品牌同步测试，因为未在 BRAND_CONFIG 中配置或缺少必要的 Pepperjam/Shopify 凭证。")
 
     # # 测试全面同步 (可选，如果配置了多个品牌和关键词)
     # print("\n--- 测试全面同步 (可选) ---")

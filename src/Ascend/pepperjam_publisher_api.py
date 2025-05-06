@@ -16,6 +16,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from dotenv import load_dotenv
+from loguru import logger
 
 # 加载环境变量
 load_dotenv()
@@ -95,9 +96,9 @@ class PepperjamPublisherAPI:
         
         while retry_count < max_retries:
             try:
-                print(f"正在请求 {resource} 资源...")
-                print(f"URL: {url}")
-                print(f"参数: {request_params}")
+                logger.info(f"正在请求 {resource} 资源...")
+                logger.debug(f"URL: {url}")
+                logger.debug(f"参数: {request_params}")
                 
                 if method == "GET":
                     response = self.session.get(
@@ -138,7 +139,7 @@ class PepperjamPublisherAPI:
                 
                 # 检查状态码，如果是可重试的错误，继续重试
                 if response.status_code >= 500:
-                    print(f"服务器错误 (状态码: {response.status_code})，正在重试...")
+                    logger.warning(f"服务器错误 (状态码: {response.status_code})，正在重试...")
                     retry_count += 1
                     time.sleep(1 * retry_count)  # 指数退避
                     continue
@@ -147,16 +148,16 @@ class PepperjamPublisherAPI:
                 response.raise_for_status()
                 
                 # 打印响应内容以便调试
-                print(f"响应状态码: {response.status_code}")
-                print(f"响应头: {response.headers}")
+                logger.debug(f"响应状态码: {response.status_code}")
+                logger.debug(f"响应头: {response.headers}")
                 
                 # 尝试解析响应
                 try:
                     response_data = response.json()
-                    print(f"请求成功, 状态码: {response_data.get('meta', {}).get('status', {}).get('code')}")
+                    logger.info(f"请求成功, 状态码: {response_data.get('meta', {}).get('status', {}).get('code')}")
                     return response_data
                 except json.JSONDecodeError:
-                    print(f"JSON解析错误，原始响应内容: {response.text[:500]}...")
+                    logger.error(f"JSON解析错误，原始响应内容: {response.text[:500]}...")
                     if retry_count < max_retries - 1:
                         retry_count += 1
                         time.sleep(2 ** retry_count)
@@ -164,39 +165,39 @@ class PepperjamPublisherAPI:
                     return {"error": "无法解析JSON响应", "raw_response": response.text}
                 
             except requests.exceptions.SSLError as error:
-                print(f"SSL错误: {error}")
+                logger.error(f"SSL错误: {error}")
                 if not verify_ssl:
                     # 如果已经禁用了SSL验证但仍然出错，说明问题不在SSL验证
                     last_error = error
                     break
                 else:
                     # 尝试禁用SSL验证再试一次
-                    print("尝试禁用SSL验证...")
+                    logger.warning("尝试禁用SSL验证...")
                     verify_ssl = False
                     continue
                     
             except requests.exceptions.RequestException as error:
-                print(f"请求错误 (尝试 {retry_count + 1}/{max_retries}): {error}")
+                logger.error(f"请求错误 (尝试 {retry_count + 1}/{max_retries}): {error}")
                 if hasattr(error, 'response') and error.response is not None:
-                    print(f"状态码: {error.response.status_code}")
+                    logger.error(f"状态码: {error.response.status_code}")
                     try:
-                        print(f"错误详情: {error.response.json()}")
+                        logger.error(f"错误详情: {error.response.json()}")
                     except:
-                        print(f"错误内容: {error.response.text[:500]}...")
+                        logger.error(f"错误内容: {error.response.text[:500]}...")
                 
                 last_error = error
                 retry_count += 1
                 
                 if retry_count < max_retries:
                     sleep_time = 2 ** retry_count  # 指数退避
-                    print(f"等待 {sleep_time} 秒后重试...")
+                    logger.info(f"等待 {sleep_time} 秒后重试...")
                     time.sleep(sleep_time)
                 else:
                     break
         
         # 如果所有重试都失败了
         if last_error:
-            print(f"请求 {resource} 失败，已达到最大重试次数 ({max_retries})")
+            logger.error(f"请求 {resource} 失败，已达到最大重试次数 ({max_retries})")
             raise last_error
         
         return None
@@ -412,19 +413,19 @@ def save_to_json_file(data, filename, limit=None):
     
     # 如果需要限制结果数量，在这里处理
     if limit and isinstance(data, dict) and 'data' in data and isinstance(data['data'], list):
-        print(f"API返回了 {len(data['data'])} 条数据，但根据您的设置将只保存前 {limit} 条")
+        logger.info(f"API返回了 {len(data['data'])} 条数据，但根据您的设置将只保存前 {limit} 条")
         data['data'] = data['data'][:limit]
         # 也更新元数据中的总结果数
         if 'meta' in data and 'pagination' in data['meta'] and 'total_results' in data['meta']['pagination']:
             original_count = data['meta']['pagination']['total_results']
             data['meta']['pagination']['total_results'] = min(limit, original_count)
-            print(f"原始数据总数: {original_count}，限制后数据总数: {data['meta']['pagination']['total_results']}")
+            logger.debug(f"原始数据总数: {original_count}，限制后数据总数: {data['meta']['pagination']['total_results']}")
     
     # 写入JSON文件
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, indent=2, ensure_ascii=False, fp=f)
     
-    print(f"数据已保存到: {file_path}")
+    logger.info(f"数据已保存到: {file_path}")
     return file_path
 
 def main():
@@ -491,13 +492,17 @@ def main():
     
     args = parser.parse_args()
     
-    # 启用调试模式
+    # 启用调试模式 - Loguru 的级别主要由 main.py 控制
+    # 如果此脚本独立运行，可以按需在这里添加/修改 sink 的级别
     if args.debug:
-        import logging
-        logging.basicConfig(level=logging.DEBUG)
-        requests_log = logging.getLogger("requests.packages.urllib3")
-        requests_log.setLevel(logging.DEBUG)
-        requests_log.propagate = True
+        # import logging # No longer need standard logging
+        # logging.basicConfig(level=logging.DEBUG)
+        # requests_log = logging.getLogger("requests.packages.urllib3")
+        # requests_log.setLevel(logging.DEBUG)
+        # requests_log.propagate = True
+        # 对于 Loguru，如果希望独立运行时有 DEBUG 输出，可以这样做：
+        # logger.add(sys.stderr, level="DEBUG") # 但这可能会与 main.py 中的配置冲突或重复
+        logger.info("调试模式已通过命令行参数请求 (此脚本独立运行时，依赖Loguru默认或此处临时配置)")
     
     # 实例化API客户端
     try:
@@ -613,10 +618,10 @@ def main():
             parser.print_help()
     
     except Exception as e:
-        print(f"错误: {e}")
-        if args.debug:
-            import traceback
-            traceback.print_exc()
+        logger.error(f"错误: {e}", exc_info=True)
+        # if args.debug: # exc_info=True in logger.error should provide stack trace
+            # import traceback
+            # traceback.print_exc()
 
 if __name__ == "__main__":
     main() 
