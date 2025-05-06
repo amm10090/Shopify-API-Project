@@ -13,15 +13,13 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 # 从product_fetcher.py导入函数
-from CJ.CJ_product_fetcher import get_products_by_advertiser
+from .CJ_product_fetcher import get_products_by_advertiser
 
 # 加载环境变量
 load_dotenv()
 
 # 品牌列表及其广告商ID
 BRANDS = [
-    {"name": "Best Vet Care", "id": "4247934"},
-    {"name": "Budget Pet Care", "id": "4250177"},
     {"name": "Canada Pet Care", "id": "4247933"},
     {"name": "Dreo", "id": "6088764"},
     {"name": "GeorgiaBoot.com", "id": "6284907"},
