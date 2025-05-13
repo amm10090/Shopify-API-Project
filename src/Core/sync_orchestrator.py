@@ -2,6 +2,10 @@ import os
 from typing import List, Dict, Any, Optional
 from loguru import logger # 导入 loguru logger
 import re # 导入 re
+import json # Add import
+from datetime import datetime # Add import
+from pathlib import Path # Add import
+import dataclasses # Add import
 
 from Core.data_models import UnifiedProduct
 from Core.product_retriever import ProductRetriever
@@ -19,9 +23,10 @@ BRAND_CONFIG: Dict[str, Dict[str, str]] = {
     "RockyBoots.com": {"api_type": "cj", "id": "6284903"},
     "Trina Turk": {"api_type": "cj", "id": "5923714"},
     "Xtratuf": {"api_type": "cj", "id": "5535819"},
-    # Ascend/Pepperjam Brand (用户提供 ID 6200)
-    # 我们需要为这个品牌起一个名字，例如 "PepperjamBrand6200"
-    "PepperjamBrand6200": {"api_type": "pepperjam", "id": "6200"} 
+    # Ascend/Pepperjam Brands - Updated by user
+    "Le Creuset": {"api_type": "pepperjam", "id": "6200"}, 
+    "BOMBAS": {"api_type": "pepperjam", "id": "8171"},
+    "Ashworth Golf International LLC": {"api_type": "pepperjam", "id": "10135"},
 }
 
 # Shopify元字段配置 (用于存储联盟链接)
@@ -34,14 +39,21 @@ METAFIELD_VALUE_TYPE_URL = "url"
 class SyncOrchestrator:
     """编排从API获取产品并同步到Shopify的整个流程。"""
 
-    PRODUCTS_PER_BRAND_TARGET = 75 # 每个品牌的目标产品数量
+    PRODUCTS_PER_BRAND_TARGET = 50 # 每个品牌的目标产品数量
     API_FETCH_LIMIT_MULTIPLIER = 1.5 # 获取API产品时，请求数量的乘数，以便有足够产品筛选
 
-    def __init__(self, dry_run: bool = False): # 添加 dry_run 参数
-        self.dry_run = dry_run # 存储 dry_run 状态
+    def __init__(self, dry_run: bool = False, test_mode: bool = False):
+        self.dry_run = dry_run
+        self.test_mode = test_mode
+        logger.info(f"SyncOrchestrator 初始化接收参数: dry_run={dry_run}, test_mode={test_mode}")
+        logger.info(f"SyncOrchestrator 实例属性: self.dry_run={self.dry_run}, self.test_mode={self.test_mode}")
+        
+        if self.test_mode:
+            self.PRODUCTS_PER_BRAND_TARGET = 1
+            logger.info("测试模式已在 SyncOrchestrator 中激活，每个品牌将只获取1个产品")
+            
         self.product_retriever = ProductRetriever()
-        # 将 dry_run 传递给 ShopifyConnector
-        self.shopify_connector = ShopifyConnector(dry_run=self.dry_run) 
+        self.shopify_connector = ShopifyConnector(dry_run=self.dry_run, test_mode=self.test_mode) 
         self.brand_config = BRAND_CONFIG # 可以考虑从外部文件加载此配置
         # self.logger = logging.getLogger(__name__) # 获取 logger 实例 - Loguru不需要这个
 
@@ -74,6 +86,27 @@ class SyncOrchestrator:
             if match_found:
                 filtered_products.append(product)
         return filtered_products
+
+    def _save_dry_run_export(self, products: List[UnifiedProduct], brand_name: str):
+        """在 dry_run 模式下将获取的产品列表保存到 JSON 文件。"""
+        try:
+            output_dir = Path("output") / "dry_run_exports"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            # 清理品牌名称以用于文件名
+            safe_brand_name = re.sub(r'[^\w\-]+', '_', brand_name)
+            file_path = output_dir / f"dry_run_export_{safe_brand_name}_{timestamp}.json"
+            
+            # 将 UnifiedProduct 对象列表转换为字典列表
+            products_dict_list = [dataclasses.asdict(p) for p in products]
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(products_dict_list, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"DRY RUN: 已将 {len(products)} 个产品导出到: {file_path}")
+        except Exception as e:
+            logger.error(f"DRY RUN: 保存导出文件时出错 for brand '{brand_name}': {e}", exc_info=True)
 
     def run_sync_for_brand(self, brand_name: str, user_keywords_str: Optional[str] = None):
         """
@@ -145,6 +178,12 @@ class SyncOrchestrator:
         final_products_to_sync = keyword_filtered_products[:self.PRODUCTS_PER_BRAND_TARGET]
         logger.info(f"最终选择 {len(final_products_to_sync)} 个产品进行 Shopify 同步。")
 
+        # --- Dry Run Export Logic ---
+        if self.dry_run and final_products_to_sync:
+            logger.info(f"DRY RUN 模式：准备导出 {len(final_products_to_sync)} 个产品到 JSON...")
+            self._save_dry_run_export(final_products_to_sync, brand_name)
+        # --- End Dry Run Export Logic ---
+
         # 3. Shopify 主草稿产品系列管理
         master_collection_title = f"{brand_name} - API Products - Draft"
         # 生成 handle (可选，Shopify会自动生成，但提供一个可以更可控)
@@ -180,6 +219,7 @@ class SyncOrchestrator:
 
         # 5. 同步产品到 Shopify
         synced_skus_this_run = set()
+        logger.debug(f"在 run_sync_for_brand 中，即将使用的 shopify_connector 的 test_mode: {self.shopify_connector.test_mode}, dry_run: {self.shopify_connector.dry_run}") # 添加日志
         for unified_product in final_products_to_sync:
             # 生成/确保 SKU
             if not unified_product.sku: # 理论上 UnifiedProduct 的 __post_init__ 已处理
@@ -234,9 +274,15 @@ class SyncOrchestrator:
                     unified_product.shopify_product_id = shopify_product_to_manage.id
 
             except Exception as e_prod_sync:
-                logger.error(f"同步产品 '{unified_product.title}' (SKU: {unified_product.sku}) 到 Shopify 时发生错误: {e_prod_sync}", exc_info=True)
-                # 考虑是否要继续处理下一个产品，或者中止整个品牌的同步
-                continue # 继续处理下一个产品
+                # 尝试更安全地记录异常信息
+                error_type = type(e_prod_sync).__name__
+                error_message = str(e_prod_sync)
+                logger.error(
+                    f"同步产品 '{unified_product.title}' (SKU: {unified_product.sku}) 到 Shopify 时发生错误。 "
+                    f"类型: {error_type}, 消息: {error_message}",
+                    exc_info=True 
+                )
+                continue 
 
         # 6. 处理不再同步的产品 (从主草稿产品系列中移除或归档)
         # 这是复杂部分：需要获取 shopify_master_collection 中的所有产品，

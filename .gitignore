@@ -14,7 +14,7 @@ TASK_Loguru_Refactor.md
 
 # C extensions
 *.so
-
+src/Shopify/theme
 # Distribution / packaging
 .Python
 build/

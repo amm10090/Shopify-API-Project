@@ -463,6 +463,7 @@ def main():
     products_parser = subparsers.add_parser('products', help='获取商品列表')
     products_parser.add_argument('--advertiser', '-a', help='广告商ID（可选）')
     products_parser.add_argument('--page', '-p', type=int, default=1, help='页码')
+    products_parser.add_argument('--test', action='store_true', help='测试模式，只获取1个产品')
     
     # 获取商品详情
     product_parser = subparsers.add_parser('product', help='获取商品详情')
@@ -474,6 +475,7 @@ def main():
     search_parser.add_argument('--advertiser', '-a', help='广告商ID（可选）')
     search_parser.add_argument('--page', '-p', type=int, default=1, help='页码')
     search_parser.add_argument('--no-ssl-verify', action='store_true', help='禁用SSL验证')
+    search_parser.add_argument('--test', action='store_true', help='测试模式，只获取1个产品')
     
     # 获取交易
     transactions_parser = subparsers.add_parser('transactions', help='获取交易记录')
@@ -498,6 +500,7 @@ def main():
     itemized_parser.add_argument('--list-id', '-l', required=True, help='商品清单ID (必需)')
     itemized_parser.add_argument('--product-ids', '-i', help='商品ID或逗号分隔的商品ID列表 (可选)')
     itemized_parser.add_argument('--page', '-p', type=int, default=1, help='页码')
+    itemized_parser.add_argument('--test', action='store_true', help='测试模式，只获取1个产品')
     
     # 新增：获取发布者产品创意素材
     publisher_products_parser = subparsers.add_parser('publisher-products', help='获取发布者产品创意素材')
@@ -507,10 +510,12 @@ def main():
     publisher_products_parser.add_argument('--refurl', help='关联流量和转化的URL (可选)')
     publisher_products_parser.add_argument('--page', '-p', type=int, default=1, help='页码')
     publisher_products_parser.add_argument('--limit', '-l', type=int, default=2500, help='返回的最大结果数量 (默认2500，API限制最多2500条)')
+    publisher_products_parser.add_argument('--test', action='store_true', help='测试模式，只获取1个产品')
 
     # 添加全局选项
     parser.add_argument('--debug', action='store_true', help='启用调试模式')
     parser.add_argument('--no-ssl-verify', action='store_true', help='禁用SSL验证')
+    parser.add_argument('--test', action='store_true', help='测试模式，只获取1个产品')
     
     args = parser.parse_args()
     
@@ -523,6 +528,10 @@ def main():
         # requests_log.setLevel(logging.DEBUG)
         # requests_log.propagate = True
         logger.info("调试模式已通过命令行参数请求 (此脚本独立运行时，依赖Loguru默认或此处临时配置)")
+    
+    # 如果指定了测试模式
+    if hasattr(args, 'test') and args.test:
+        logger.info("测试模式已启用，仅获取1个产品")
     
     # 实例化API客户端
     try:
@@ -540,6 +549,12 @@ def main():
         elif args.command == 'products':
             # 获取商品列表
             data = client.get_products(args.advertiser, args.page)
+            
+            # 如果处于测试模式并且有数据，只保留第一条数据
+            if hasattr(args, 'test') and args.test and data and 'data' in data and isinstance(data['data'], list) and data['data']:
+                data['data'] = data['data'][:1]
+                logger.info("测试模式：只保留第一个产品")
+                
             if data:
                 save_to_json_file(data, "products")
         
@@ -552,6 +567,12 @@ def main():
         elif args.command == 'search':
             # 搜索商品
             data = client.search_products(args.keyword, args.advertiser, args.page)
+            
+            # 如果处于测试模式并且有数据，只保留第一条数据
+            if hasattr(args, 'test') and args.test and data and 'data' in data and isinstance(data['data'], list) and data['data']:
+                data['data'] = data['data'][:1]
+                logger.info("测试模式：只保留第一个产品")
+                
             if data:
                 save_to_json_file(data, f"search_{args.keyword}")
             else:
@@ -584,6 +605,12 @@ def main():
         # 新增：处理新子命令
         elif args.command == 'itemized-products':
             data = client.get_itemized_list_products(args.list_id, args.product_ids, args.page)
+            
+            # 如果处于测试模式并且有数据，只保留第一条数据
+            if hasattr(args, 'test') and args.test and data and 'data' in data and isinstance(data['data'], list) and data['data']:
+                data['data'] = data['data'][:1]
+                logger.info("测试模式：只保留第一个产品")
+                
             if data:
                 filename_parts = ["itemized_products", f"list_{args.list_id}"]
                 if args.product_ids:
@@ -594,6 +621,11 @@ def main():
                 
         # 新增：处理发布者产品创意素材子命令
         elif args.command == 'publisher-products':
+            # 如果处于测试模式，将限制设为1
+            if hasattr(args, 'test') and args.test:
+                args.limit = 1
+                logger.info("测试模式：将产品限制设为1")
+                
             data = client.get_publisher_product_creatives(
                 program_ids=args.program_ids,
                 categories=args.categories,

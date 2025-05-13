@@ -49,15 +49,18 @@ class ShopifyConnector:
     MAX_RETRIES = 3
     RETRY_DELAY_SECONDS = 5
 
-    def __init__(self, dry_run: bool = False): # 添加 dry_run 参数
-        self.dry_run = dry_run # 存储 dry_run 状态
-        # self.logger = logging.getLogger(__name__) # 初始化 logger - Loguru不需要这个
+    def __init__(self, dry_run: bool = False, test_mode: bool = False):
+        self.dry_run = dry_run 
+        self.test_mode = test_mode
+        logger.debug(f"ShopifyConnector 内部 __init__ 开始: dry_run={dry_run} (参数), test_mode={test_mode} (参数)")
+        logger.debug(f"ShopifyConnector 实例属性赋值后: self.dry_run={self.dry_run}, self.test_mode={self.test_mode}")
 
         self.api_key = os.getenv('SHOPIFY_API_KEY')
         self.api_password = os.getenv('SHOPIFY_API_PASSWORD') 
         self.access_token = os.getenv('SHOPIFY_ACCESS_TOKEN') 
         self.store_name = os.getenv('SHOPIFY_STORE_NAME')
         self.api_version = os.getenv('SHOPIFY_API_VERSION', '2024-07') # 确保使用有效的API版本
+        self.default_inventory = int(os.getenv('SHOPIFY_DEFAULT_PRODUCT_INVENTORY', '99')) # 新增：加载默认库存
 
         if not self.store_name:
             logger.error("Shopify store name (SHOPIFY_STORE_NAME) 未在 .env 文件中设置。")
@@ -99,6 +102,7 @@ class ShopifyConnector:
                 shop = shopify.Shop.current() 
                 logger.info(f"店铺名称: {shop.name}, 店铺ID: {shop.id}")
 
+            logger.debug(f"ShopifyConnector 初始化完成: dry_run={self.dry_run}, test_mode={self.test_mode}") # 添加日志
         except Exception as e:
             logger.error(f"Shopify 连接失败: {e}", exc_info=True)
             raise ConnectionError(f"无法连接到 Shopify: {e}") from e
@@ -119,8 +123,7 @@ class ShopifyConnector:
         while retries < self.MAX_RETRIES:
             try:
                 return func(*args, **kwargs)
-            except pyactiveresource_connection.ClientError as e: #捕获客户端错误 (4xx)
-                # 特别处理 429 Too Many Requests 用于重试
+            except pyactiveresource_connection.ClientError as e: 
                 if hasattr(e, 'response') and e.response is not None and e.response.code == 429:
                     retries += 1
                     if retries < self.MAX_RETRIES:
@@ -130,11 +133,16 @@ class ShopifyConnector:
                     else:
                         logger.error(f"Shopify API 错误: 达到最大重试次数 (429)。最后错误: {e}", exc_info=True)
                         raise
-                # 其他客户端错误直接抛出，不重试
-                logger.error(f"Shopify API 客户端错误 (4xx，非429): {e}", exc_info=True)
+                # Checklist Item 1: Enhanced logging for ClientError
+                response_body_snippet = ""
+                if hasattr(e, 'response') and e.response is not None and hasattr(e.response, 'body') and e.response.body:
+                    try:
+                        response_body_snippet = e.response.body.decode('utf-8', errors='ignore')[:200]
+                    except:
+                        response_body_snippet = str(e.response.body)[:200]
+                logger.error(f"Shopify API 客户端错误 (4xx，非429): 类型={type(e).__name__}, repr={repr(e)}, str={str(e)},响应码={getattr(e.response, 'code', 'N/A')}, 响应体片段='{response_body_snippet}'", exc_info=True)
                 raise
-            except pyactiveresource_connection.ServerError as e: # 捕获服务器端错误 (5xx)
-                # 服务器错误进行重试
+            except pyactiveresource_connection.ServerError as e: 
                 retries += 1
                 if retries < self.MAX_RETRIES:
                     status_code = e.response.code if hasattr(e, 'response') and e.response is not None else "N/A"
@@ -144,10 +152,10 @@ class ShopifyConnector:
                 else:
                     logger.error(f"Shopify API 服务器错误: 已达到最大重试次数。最后错误: {e}", exc_info=True)
                     raise
-            except Exception as e: # 捕获其他所有预料之外的错误
-                logger.error(f"执行 Shopify 操作时发生意外错误: {e}", exc_info=True)
+            except Exception as e: 
+                logger.error(f"执行 Shopify 操作时发生意外错误: {type(e).__name__} - {repr(e)}", exc_info=True)
                 raise
-        return None # 理论上不应到达这里，除非循环条件不满足但没有抛出异常
+        return None 
 
     def get_or_create_collection(self, title: str, handle: Optional[str] = None, published: bool = False, body_html: str = "") -> Optional[shopify.CustomCollection]:
         logger.debug(f"get_or_create_collection 调用: title='{title}', handle='{handle}', published={published}")
@@ -168,20 +176,24 @@ class ShopifyConnector:
                     existing_collection = coll
                     logger.info(f"按 handle '{handle}' 找到已存在的产品系列: {coll.title} (ID: {coll.id})")
                     break
-                if not existing_collection and coll.title == title:
+                if not existing_collection and coll.title == title: # Check by title if not found by handle
                     existing_collection = coll
                     logger.info(f"按 title '{title}' 找到已存在的产品系列 (handle: {coll.handle}, ID: {coll.id})")
+                    # Do not break here, continue to see if a handle match is found later, handle match takes precedence
 
             if existing_collection:
                 needs_update = False
-                if existing_collection.published != published:
-                    existing_collection.published = published
-                    if hasattr(existing_collection, 'published_at'): # 确保属性存在
+                current_is_published = existing_collection.published_at is not None
+                logger.debug(f"检查产品系列 ID {existing_collection.id}: 当前 published_status_by_at={current_is_published} (目标: {published}), published_at={getattr(existing_collection, 'published_at', 'N/A')}")
+                
+                if current_is_published != published:
+                    existing_collection.published = published # Set the target state
+                    if hasattr(existing_collection, 'published_at'): 
                         existing_collection.published_at = datetime.utcnow().isoformat() if published else None
                     needs_update = True
                 
                 if body_html and hasattr(existing_collection, 'body_html') and existing_collection.body_html != body_html:
-                    existing_collection.body_html = body_html
+                    existing_collection.body_html = body_html 
                     needs_update = True
                 
                 if needs_update:
@@ -190,12 +202,14 @@ class ShopifyConnector:
                         logger.info(f"DRY RUN: 本应更新产品系列 ID {existing_collection.id} 的 published={published}, body_html='{body_html[:50]}...'")
                     else:
                         self._request_with_retry(existing_collection.save)
+                        if existing_collection.errors:
+                            logger.error(f"更新产品系列 '{existing_collection.title}' (ID: {existing_collection.id}) 失败: {existing_collection.errors.full_messages()}")
+                            # Potentially raise an error or handle it, depending on desired behavior
                 return existing_collection
 
             logger.info(f"产品系列 '{title}' (handle: '{handle}') 未找到，准备创建...")
             if self.dry_run:
                 logger.info(f"DRY RUN: 本应创建产品系列: title='{title}', handle='{handle}', published={published}, body_html='{body_html[:50]}...'")
-                # 返回一个模拟对象
                 mock_coll = shopify.CustomCollection({'id': f"DRY_RUN_COLL_ID_{int(time.time())}", 'title': title, 'handle': handle, 'published': published, 'body_html': body_html})
                 return mock_coll
             
@@ -217,8 +231,8 @@ class ShopifyConnector:
         except pyactiveresource_connection.ClientError as e:
             logger.error(f"处理产品系列 '{title}' 时发生 Shopify API 错误: {e}", exc_info=True)
             raise
-        except Exception as e:
-            logger.error(f"处理产品系列 '{title}' 时发生意外错误: {e}", exc_info=True)
+        except Exception as e: 
+            logger.error(f"处理产品系列 '{title}' 时发生意外错误: {type(e).__name__} - {repr(e)}", exc_info=True)
             raise
         return None
 
@@ -227,7 +241,6 @@ class ShopifyConnector:
         logger.debug(f"add_product_to_collection 调用: product_id={shopify_product_id}, collection_id={collection_id}")
         if self.dry_run:
             logger.info(f"DRY RUN: 本应将产品 {shopify_product_id} 添加到产品系列 {collection_id}")
-            # 返回一个模拟的 Collect 对象或 None
             return shopify.Collect({'id': f"DRY_RUN_COLLECT_ID_{int(time.time())}", 'product_id': shopify_product_id, 'collection_id': collection_id})
 
         try:
@@ -237,34 +250,78 @@ class ShopifyConnector:
             })
             self._request_with_retry(collect.save)
             if collect.errors:
-                error_messages = str(collect.errors.full_messages()).lower()
-                if "product is already in collection" in error_messages or "product_id has already been taken" in error_messages:
+                is_duplicate_error = False
+                messages_from_shopify = collect.errors.full_messages() # 获取一次错误消息
+
+                # 定义重复错误的关键词列表
+                keywords_for_duplicate = [
+                    "product_id already exists", # 根据日志观察到的主要错误信息
+                    "product is already in collection", # 通用备用
+                    "product_id has already been taken"   # 另一个常见备用
+                ]
+
+                if isinstance(messages_from_shopify, list):
+                    for msg_item in messages_from_shopify:
+                        msg_lower = str(msg_item).strip().lower()
+                        if any(keyword in msg_lower for keyword in keywords_for_duplicate):
+                            is_duplicate_error = True
+                            break
+                elif isinstance(messages_from_shopify, str): 
+                    msg_lower = messages_from_shopify.strip().lower()
+                    if any(keyword in msg_lower for keyword in keywords_for_duplicate):
+                        is_duplicate_error = True
+                
+                if is_duplicate_error:
                     logger.info(f"产品 {shopify_product_id} 已在产品系列 {collection_id} 中。")
-                    # 尝试查找现有的 Collect
-                    existing_collects = shopify.Collect.find(product_id=shopify_product_id, collection_id=collection_id)
-                    if existing_collects:
-                        return existing_collects[0]
-                    return collect 
+                    # 尝试再次查找现有 collect，因为 save() 失败但错误表明它存在
+                    try:
+                        existing_collects = self._request_with_retry(shopify.Collect.find, product_id=shopify_product_id, collection_id=collection_id)
+                        if existing_collects:
+                            logger.info(f"确认产品 {shopify_product_id} 已存在于产品系列 {collection_id}。Collect ID: {existing_collects[0].id}")
+                            return existing_collects[0]
+                        else:
+                            logger.warning(f"产品 {shopify_product_id} 报告已在产品系列 {collection_id} 中，但无法通过查询找到。")
+                            return None # 表示无法获取干净的 Collect 对象
+                    except Exception as find_e:
+                        logger.error(f"尝试在报告重复后查找现有 Collect 时出错: {find_e}", exc_info=True)
+                        return None # 表示解析失败
                 else:
-                    logger.error(f"将产品 {shopify_product_id} 添加到产品系列 {collection_id} 失败: {collect.errors.full_messages()}")
-                    raise pyactiveresource_connection.ClientError(f"添加产品到产品系列失败: {collect.errors.full_messages()}")
+                    # 这是 collect.save() 的其他错误，不是重复错误
+                    logger.error(f"将产品 {shopify_product_id} 添加到产品系列 {collection_id} 失败 (非重复错误): {messages_from_shopify}")
+                    # 不再抛出新的 ClientError，直接返回 None
+                    return None
             
             logger.info(f"产品 {shopify_product_id} 成功添加到产品系列 {collection_id} (Collect ID: {collect.id})")
             return collect
-        except pyactiveresource_connection.ClientError as e:
-            if hasattr(e, 'response') and e.response is not None and e.response.code == 422:
-                logger.warning(f"将产品 {shopify_product_id} 添加到产品系列 {collection_id} 时可能遇到重复错误 (HTTP 422)。错误: {e}")
+        except pyactiveresource_connection.ClientError as e: # 这个块现在应该只处理来自 _request_with_retry 的真实 ClientError
+            response_body_snippet_add = ""
+            response_code_for_log = 'N/A' # 安全地获取响应码
+            
+            if hasattr(e, 'response') and e.response is not None:
+                # 安全地获取 code 属性
+                response_code_for_log = getattr(e.response, 'code', 'N/A')
+                if hasattr(e.response, 'body') and e.response.body:
+                    try:
+                        response_body_snippet_add = e.response.body.decode('utf-8', errors='ignore')[:200]
+                    except:
+                        response_body_snippet_add = str(e.response.body)[:200]
+                        
+            logger.error(f"将产品 {shopify_product_id} 添加到集合 {collection_id} 时发生API错误: 类型={type(e).__name__}, repr={repr(e)}, str={str(e)}, 响应码={response_code_for_log}, 响应体片段='{response_body_snippet_add}'", exc_info=True)
+            
+            # 仅当 response_code_for_log 确实是 422 时才专门处理 422 错误
+            if response_code_for_log == 422:
+                logger.warning(f"将产品 {shopify_product_id} 添加到产品系列 {collection_id} 时可能遇到重复错误 (HTTP 422)。原始错误: {e}") 
+                # Try to find existing collect again, as the save might have failed due to duplication but it actually exists
                 try:
-                    existing_collects = shopify.Collect.find(product_id=shopify_product_id, collection_id=collection_id)
-                    if existing_collects:
-                        logger.info(f"产品 {shopify_product_id} 已确认存在于产品系列 {collection_id} 中。Collect ID: {existing_collects[0].id}")
-                        return existing_collects[0]
-                except Exception as find_e:
-                    logger.error(f"尝试查找现有 Collect 时出错: {find_e}", exc_info=True)
-            logger.error(f"将产品 {shopify_product_id} 添加到产品系列 {collection_id} 时发生 Shopify API 错误: {e}", exc_info=True)
+                    existing_collects_after_422 = self._request_with_retry(shopify.Collect.find, product_id=shopify_product_id, collection_id=collection_id)
+                    if existing_collects_after_422:
+                        logger.info(f"产品 {shopify_product_id} 在422错误后确认已存在于产品系列 {collection_id} 中。Collect ID: {existing_collects_after_422[0].id}")
+                        return existing_collects_after_422[0]
+                except Exception as find_e_after_422:
+                    logger.error(f"在422错误后尝试查找现有 Collect 时出错: {find_e_after_422}", exc_info=True)
             raise
-        except Exception as e:
-            logger.error(f"将产品 {shopify_product_id} 添加到产品系列 {collection_id} 时发生意外错误: {e}", exc_info=True)
+        except Exception as e: 
+            logger.error(f"将产品 {shopify_product_id} 添加到产品系列 {collection_id} 时发生意外错误: {type(e).__name__} - {repr(e)}", exc_info=True)
             raise
         return None
 
@@ -292,14 +349,13 @@ class ShopifyConnector:
             logger.error(f"从产品系列 {collection_id} 移除产品 {shopify_product_id} 时发生 Shopify API 错误: {e}", exc_info=True)
             raise
         except Exception as e:
-            logger.error(f"从产品系列 {collection_id} 移除产品 {shopify_product_id} 时发生意外错误: {e}", exc_info=True)
+            logger.error(f"从产品系列 {collection_id} 移除产品 {shopify_product_id} 时发生意外错误: {type(e).__name__} - {repr(e)}", exc_info=True)
             raise
         return False
 
     def get_product_by_sku(self, sku: str) -> Optional[shopify.Product]:
         logger.debug(f"正在尝试按 SKU '{sku}' 查找产品...")
         try:
-            # 初始请求，仅使用limit参数
             products_page = self._request_with_retry(shopify.Product.find, limit=250)
             
             while products_page:
@@ -309,14 +365,11 @@ class ShopifyConnector:
                             logger.info(f"按 SKU '{sku}' 找到产品: {product.title} (ID: {product.id}, Variant ID: {variant.id})")
                             return product
                 
-                # 检查是否还有下一页
                 if len(products_page) < 250:
                     break
                 
-                # 尝试获取最后一个产品ID用于后续请求
                 if products_page:
                     last_id = products_page[-1].id
-                    # 使用since_id参数获取下一页
                     products_page = self._request_with_retry(shopify.Product.find, limit=250, since_id=last_id)
                 else:
                     break
@@ -328,7 +381,7 @@ class ShopifyConnector:
             logger.error(f"按 SKU '{sku}' 查找产品时发生 Shopify API 错误: {e}", exc_info=True)
             raise
         except Exception as e:
-            logger.error(f"按 SKU '{sku}' 查找产品时发生意外错误: {e}", exc_info=True)
+            logger.error(f"按 SKU '{sku}' 查找产品时发生意外错误: {type(e).__name__} - {repr(e)}", exc_info=True)
             raise
         return None
 
@@ -336,16 +389,16 @@ class ShopifyConnector:
         logger.info(f"准备创建 Shopify 产品: SKU='{unified_product.sku}', Title='{unified_product.title}', Status='{status}'")
         if self.dry_run:
             logger.info(f"DRY RUN: 本应创建产品: SKU='{unified_product.sku}', Title='{unified_product.title}', Price={unified_product.price}, Status='{status}'")
-            # 返回一个模拟的 Product 对象
             mock_product = shopify.Product({
                 'id': f"DRY_RUN_PROD_ID_{int(time.time())}", 
                 'title': unified_product.title,
-                'sku': unified_product.sku, # SKU 在变体中，但这里为了方便可以模拟
+                'sku': unified_product.sku, 
                 'variants': [shopify.Variant({'id': f"DRY_RUN_VAR_ID_{int(time.time())}", 'inventory_item_id': f"DRY_RUN_INV_ID_{int(time.time())}", 'sku': unified_product.sku})],
                 'published_at': None if status == 'draft' else datetime.utcnow().isoformat()
             })
             return mock_product
 
+        new_shopify_product = None 
         try:
             new_shopify_product = shopify.Product()
             new_shopify_product.title = unified_product.title
@@ -355,25 +408,26 @@ class ShopifyConnector:
             
             if status == 'draft':
                 new_shopify_product.published_at = None
-                new_shopify_product.published_scope = "web" # 即使是草稿，也最好设置范围
+                new_shopify_product.published_scope = "web" 
             elif status == 'active':
                 new_shopify_product.published_at = datetime.utcnow().isoformat()
                 new_shopify_product.published_scope = "web"
 
-            # 变体信息 (假设单个变体)
+            # 创建变体
             variant_attributes = {
-                "option1": "Default Title", # Shopify 要求至少一个 option
+                "option1": "Default Title", 
                 "price": str(unified_product.price),
                 "sku": unified_product.sku,
-                # "inventory_management": "shopify" # 让Shopify跟踪库存
+                "inventory_management": "shopify",
+                "inventory_policy": "deny"  # 当库存为0时，不允许购买
             }
+            
             if unified_product.sale_price and unified_product.sale_price < unified_product.price:
                 variant_attributes["compare_at_price"] = str(unified_product.price)
                 variant_attributes["price"] = str(unified_product.sale_price)
             
             new_shopify_product.variants = [shopify.Variant(variant_attributes)]
 
-            # 图片信息 (假设单个主图片)
             if unified_product.image_url:
                 new_shopify_product.images = [{"src": unified_product.image_url}]
 
@@ -384,33 +438,54 @@ class ShopifyConnector:
             
             logger.info(f"产品 '{new_shopify_product.title}' (ID: {new_shopify_product.id}, SKU: {unified_product.sku}) 成功创建并设为 '{status}' 状态。")
             
-            # 设置初始库存 (如果产品有货)
-            # 注意：设置库存需要在产品创建并获得 inventory_item_id 后进行
-            # Shopify Product.save() 应该会填充 variants[0].inventory_item_id
+            # Checklist Item 1: Diagnostic logging for product attributes and errors after save
+            logger.debug(f"产品对象 {new_shopify_product.id} 创建后的属性: {getattr(new_shopify_product, 'attributes', 'N/A')}")
+            if hasattr(new_shopify_product, 'errors') and new_shopify_product.errors and new_shopify_product.errors.full_messages():
+                logger.warning(f"产品对象 {new_shopify_product.id} 创建后 .errors 属性中包含消息: {new_shopify_product.errors.full_messages()}")
+            else:
+                logger.debug(f"产品对象 {new_shopify_product.id} 创建后 .errors 属性为空、不存在或无消息。")
+
+            # 设置库存 - 仅保留已证明有效的方法
+            logger.debug(f"检查产品库存设置条件：unified_product.availability = {unified_product.availability}") 
             if unified_product.availability and new_shopify_product.variants and new_shopify_product.variants[0].inventory_item_id:
                 inventory_item_id = new_shopify_product.variants[0].inventory_item_id
-                # 需要 location_id 才能设置库存。首先获取默认地点。
-                try:
-                    locations = shopify.Location.find()
-                    if locations:
-                        default_location_id = locations[0].id
-                        logger.info(f"为产品 {new_shopify_product.id} (SKU: {unified_product.sku}) 在地点 {default_location_id} 设置初始库存为 1...")
-                        shopify.InventoryLevel.set(location_id=default_location_id, inventory_item_id=inventory_item_id, available=1)
-                    else:
-                        logger.warning(f"无法获取 Shopify 地点信息，跳过为产品 {new_shopify_product.id} 设置初始库存。")
-                except Exception as e_inv_set:
-                    logger.error(f"为产品 {new_shopify_product.id} 设置初始库存时出错: {e_inv_set}", exc_info=True)
-            elif not unified_product.availability:
-                 logger.info(f"产品 {new_shopify_product.id} (SKU: {unified_product.sku}) 初始标记为缺货，库存设为0 (或由Shopify默认处理)。")
-
-
+                
+                # 获取并检查所有位置
+                inventory_set_success = False
+                try: 
+                    locations = self._request_with_retry(shopify.Location.find)
+                    if not locations:
+                        logger.warning(f"无法获取任何 Shopify 位置信息，无法设置初始库存。")
+                        return new_shopify_product
+                    
+                    # 尝试所有位置直到成功
+                    for location in locations:
+                        location_id = location.id
+                        try:
+                            logger.info(f"尝试为产品 {new_shopify_product.id} (SKU: {unified_product.sku}) 在位置 {location_id} 设置初始库存为 {self.default_inventory}...")
+                            shopify.InventoryLevel.set(location_id=location_id, inventory_item_id=inventory_item_id, available=self.default_inventory)
+                            logger.info(f"产品 {new_shopify_product.id} (SKU: {unified_product.sku}) 初始库存已在位置 {location_id} 设置为 {self.default_inventory}。")
+                            inventory_set_success = True
+                            logger.info(f"产品 {new_shopify_product.id} (SKU: {unified_product.sku}) 库存已成功设置为 {self.default_inventory}。")
+                            break
+                        except Exception as e_location:
+                            logger.warning(f"在位置 {location_id} 设置库存失败: {str(e_location)}。继续尝试其他位置...")
+                            continue
+                    
+                    # 如果所有位置都失败
+                    if not inventory_set_success:
+                        logger.warning(f"在所有位置设置库存均失败，可能需要手动在Shopify后台设置库存。")
+                        
+                except Exception as e_inventory:
+                    logger.error(f"库存设置过程中发生未预期的错误: {str(e_inventory)}", exc_info=True)
+            
             return new_shopify_product
 
         except pyactiveresource_connection.ClientError as e:
-            logger.error(f"创建 Shopify 产品 '{unified_product.title}' 时发生 API 错误: {e}", exc_info=True)
+            logger.error(f"创建产品 '{unified_product.title}' 时发生 API 错误: {e}", exc_info=True)
             raise
         except Exception as e:
-            logger.error(f"创建 Shopify 产品 '{unified_product.title}' 时发生意外错误: {e}", exc_info=True)
+            logger.error(f"创建产品 '{unified_product.title}' 时发生意外错误: {e}", exc_info=True)
             raise
         return None
 
@@ -421,7 +496,7 @@ class ShopifyConnector:
             existing_product = self._request_with_retry(shopify.Product.find, shopify_product_id)
             if not existing_product:
                 logger.error(f"错误: 未找到 Shopify 产品 ID 为 {shopify_product_id} 的产品进行更新。")
-                raise pyactiveresource_connection.ResourceNotFoundError(f"Product with ID {shopify_product_id} not found.")
+                raise shopify.exceptions.ResourceNotFoundError(f"Product with ID {shopify_product_id} not found.")
 
             if self.dry_run:
                 logger.info(f"DRY RUN: 本应更新产品 ID {shopify_product_id} (SKU: {unified_product.sku}) 的信息:")
@@ -454,12 +529,10 @@ class ShopifyConnector:
             elif existing_product.images:
                 logger.debug(f"产品 {shopify_product_id} 当前有图片，但统一产品无图片URL。保留现有图片。")
 
-
-            variant_update_payload_for_product_save = {} # 用于构建 products.variants 列表
             variant_changed = False
             if existing_product.variants:
-                variant = existing_product.variants[0]
-                variant_update_data = {"id": variant.id} # 必须包含ID以更新现有变体
+                variant = existing_product.variants[0] # 获取 Variant 对象
+                # variant_update_data = {"id": variant.id} # 不再需要这个字典来构建 payload
 
                 new_price_str = str(unified_product.price)
                 new_sale_price_str = str(unified_product.sale_price) if unified_product.sale_price is not None else None
@@ -472,42 +545,51 @@ class ShopifyConnector:
                     target_compare_at_price = new_price_str
                 
                 if variant.price != target_price:
-                    variant_update_data['price'] = target_price
+                    variant.price = target_price # 直接修改 Variant 对象的属性
                     variant_changed = True
                     changed_attributes.append("variant.price")
                 
-                # 处理 compare_at_price (如果之前有但现在没了，要设为None或0)
-                if variant.compare_at_price != target_compare_at_price:
-                     # Shopify API 接受 None 或 "0.00" 来清除 compare_at_price
-                    variant_update_data['compare_at_price'] = target_compare_at_price 
+                current_compare_at_price_on_variant = variant.compare_at_price
+                needs_compare_price_update = False
+                if target_compare_at_price is None:
+                    # 如果目标是None，且当前价格不是None也不是0，则需要更新
+                    if current_compare_at_price_on_variant is not None and float(current_compare_at_price_on_variant) != 0:
+                        needs_compare_price_update = True
+                elif current_compare_at_price_on_variant != target_compare_at_price:
+                    needs_compare_price_update = True
+
+                if needs_compare_price_update:
+                    variant.compare_at_price = target_compare_at_price # 直接修改 Variant 对象的属性
                     variant_changed = True
                     changed_attributes.append("variant.compare_at_price")
 
-                # SKU 通常不应通过此方法更改
                 if variant.sku != unified_product.sku:
                     logger.warning(f"SKU 不匹配: Shopify variant SKU='{variant.sku}', UnifiedProduct SKU='{unified_product.sku}'. SKU 通常不应在更新时更改。")
-                    # variant_update_data['sku'] = unified_product.sku # 如果确实要改SKU
                 
-                if variant_changed:
-                    variant_update_payload_for_product_save = [variant_update_data] # 包装在列表中
+                # variant_update_payload_for_product_save 不再需要
             
             if update_payload or variant_changed:
                 logger.info(f"检测到产品 {shopify_product_id} 的属性 ({', '.join(changed_attributes)}) 已更改，正在保存...")
                 
-                # 应用顶级属性更改
                 for key, value in update_payload.items():
                     setattr(existing_product, key, value)
                 
-                # 如果变体有更新，设置 variants 属性
-                if variant_changed and variant_update_payload_for_product_save:
-                    existing_product.variants = variant_update_payload_for_product_save
+                # 不需要显式设置 existing_product.variants
                 
-                success = self._request_with_retry(existing_product.save)
-                if not success or existing_product.errors:
-                    error_messages = existing_product.errors.full_messages() if existing_product.errors else "未知错误，save() 返回 False"
-                    logger.error(f"更新产品 {shopify_product_id} (SKU: {unified_product.sku}) 失败: {error_messages}")
-                    raise pyactiveresource_connection.ClientError(f"更新产品失败: {error_messages}")
-                logger.info(f"产品 {shopify_product_id} (SKU: {unified_product.sku}) 成功更新。")
+                saved_result = self._request_with_retry(existing_product.save)
+                # 检查 save 操作是否成功
+                # shopify.Product.save() 在成功时返回 True，失败（如验证错误）时返回 False 并填充 errors 属性
+                if saved_result is True and not (hasattr(existing_product, 'errors') and existing_product.errors and existing_product.errors.full_messages()):
+                    logger.info(f"产品 {shopify_product_id} (SKU: {unified_product.sku}) 成功更新。")
+                else:
+                    error_messages_list = []
+                    if hasattr(existing_product, 'errors') and existing_product.errors and hasattr(existing_product.errors, 'full_messages'):
+                        error_messages_list = existing_product.errors.full_messages()
+                    
+                    error_str = ", ".join(error_messages_list) if error_messages_list else f"Save operation returned {saved_result} or errors attribute not as expected."
+                    logger.error(f"更新产品 {shopify_product_id} (SKU: {unified_product.sku}) 失败: {error_str}")
+                    # 抛出 ClientError 以便上层捕获
+                    raise pyactiveresource_connection.ClientError(f"更新产品失败: {error_str}")
             else:
                 logger.info(f"产品 {shopify_product_id} (SKU: {unified_product.sku}) 数据未发生变化，无需更新主要属性。")
 
@@ -530,7 +612,7 @@ class ShopifyConnector:
             
             return existing_product
 
-        except pyactiveresource_connection.ResourceNotFoundError:
+        except shopify.exceptions.ResourceNotFoundError:
             logger.error(f"更新失败: 未找到 Shopify 产品 ID: {shopify_product_id}", exc_info=True)
             raise
         except pyactiveresource_connection.ClientError as e:
@@ -680,7 +762,7 @@ class ShopifyConnector:
             # destroy 成功时不返回内容，失败会抛异常
             logger.info(f"产品 {shopify_product_id} 已成功删除。")
             return True
-        except shopify.exceptions.ResourceNotFoundError: # destroy 后再 find 会触发
+        except shopify.exceptions.ResourceNotFoundError: # 使用 shopify.exceptions
             logger.info(f"产品 {shopify_product_id} 已被删除 (destroy 后确认)。")
             return True
         except Exception as e:

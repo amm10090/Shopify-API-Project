@@ -1,6 +1,8 @@
 import os
 from typing import List, Optional, Dict, Any
 from loguru import logger # 导入 loguru logger
+import requests # 导入 requests 用于验证图片URL
+import re # 导入 re
 
 from Core.data_models import UnifiedProduct
 # 动态导入API客户端，以便在没有安装所有依赖项的情况下也能进行部分测试或导入
@@ -37,6 +39,90 @@ class ProductRetriever:
         if not cj_search_products:
             logger.warning("CJ 产品搜索功能不可用。")
 
+    def _is_valid_image_url(self, url: str, timeout: int = 5, min_size_bytes: int = 1000) -> bool:
+        """
+        验证图片URL是否有效。
+        
+        Args:
+            url: 要验证的图片URL
+            timeout: 请求超时时间（秒），默认5秒
+            min_size_bytes: 最小有效图片大小（字节），默认1000字节
+            
+        Returns:
+            布尔值，表示URL是否指向有效的图片
+        """
+        if not url:
+            return False
+            
+        # 检查URL是否为有效格式
+        if not re.match(r'^https?://', url):
+            logger.warning(f"图片URL格式无效: {url}")
+            return False
+            
+        try:
+            # 使用HEAD请求减少带宽使用
+            response = requests.head(url, timeout=timeout, allow_redirects=True)
+            
+            # 首先检查状态码 - 这是最重要的
+            if response.status_code != 200:
+                logger.warning(f"图片URL返回非200状态码: {url} (状态码: {response.status_code})")
+                return False
+                
+            # 检查Content-Type是否为图片类型
+            content_type = response.headers.get('Content-Type', '').lower()
+            image_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml']
+            
+            if not any(content_type.startswith(image_type) for image_type in image_types):
+                logger.warning(f"URL不是图片类型: {url} (Content-Type: {content_type})")
+                return False
+            
+            # 如果有Content-Length，检查大小以过滤可能的占位图或空图
+            if 'content-length' in response.headers:
+                content_length = int(response.headers['content-length'])
+                if content_length < min_size_bytes:
+                    logger.warning(f"图片URL内容长度过小: {url} (大小: {content_length} 字节)")
+                    return False
+            
+            # 特殊情况：某些CDN可能返回200但实际上是HTML错误页面
+            # 这种情况很少见，但为了验证，我们可以下载前几个字节判断
+            if 'cdn.shopify.com' in url and 'content-length' in response.headers:
+                # 仅对Shopify CDN和有内容长度的响应进行额外验证
+                try:
+                    with requests.get(url, timeout=timeout, stream=True) as get_response:
+                        # 只读取前64字节来检查
+                        chunk = get_response.raw.read(64)
+                        
+                        # 检查是否是HTML (可能是错误页面)
+                        if b'<!DOCTYPE html>' in chunk or b'<html' in chunk:
+                            logger.warning(f"图片URL返回HTML内容而非图片: {url}")
+                            return False
+                            
+                        # 检查常见图片格式的魔术数字
+                        is_valid_image = (
+                            chunk.startswith(b'\x89PNG\r\n\x1a\n') or  # PNG
+                            chunk.startswith(b'\xff\xd8\xff') or       # JPEG
+                            chunk.startswith(b'GIF87a') or            # GIF
+                            chunk.startswith(b'GIF89a') or            # GIF
+                            b'WEBP' in chunk                          # WebP
+                        )
+                        
+                        if not is_valid_image:
+                            logger.warning(f"下载图片头部发现内容不是有效图片: {url}")
+                            return False
+                except Exception as inner_e:
+                    # 如果额外验证失败，记录警告但继续使用HEAD请求的结果
+                    logger.warning(f"额外验证图片内容时出错: {url} (错误: {inner_e})")
+            
+            # 如果通过所有检查，认为图片URL有效
+            return True
+            
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"验证图片URL时发生请求错误: {url} (错误: {e})")
+            return False
+        except Exception as e:
+            logger.warning(f"验证图片URL时发生未预期的错误: {url} (错误: {e})")
+            return False
+
     def _cj_product_to_unified(self, cj_product: Dict[str, Any], brand_name: str, source_api_name: str) -> Optional[UnifiedProduct]:
         """将单个CJ产品字典转换为UnifiedProduct对象。"""
         if not cj_product:
@@ -59,6 +145,11 @@ class ProductRetriever:
         # 原有的 imageLink 检查仍然保留，作为双重保险或处理空字符串的情况 (尽管上面的检查也覆盖了空字符串)
         if not cj_product.get('imageLink'): # 确保 imageLink 存在
             logger.warning(f"CJ 产品缺少 imageLink (ID: {cj_product.get('id')}, 标题: {cj_product.get('title')}). 跳过此产品.")
+            return None
+            
+        # 添加图片链接有效性验证
+        if not self._is_valid_image_url(cj_product.get('imageLink')):
+            logger.warning(f"CJ 产品图片链接无效 (ID: {cj_product.get('id', 'N/A')}, 标题: {cj_product.get('title', 'N/A')}, imageLink: {cj_product.get('imageLink')}). 跳过此产品.")
             return None
         
         # 如果 advertiserId 或 id 缺失，则跳过，这些是 SKU 生成所必需的
@@ -108,7 +199,11 @@ class ProductRetriever:
 
             if raw_cj_data and raw_cj_data.get('data') and raw_cj_data['data'].get('products'):
                 products_list = raw_cj_data['data']['products'].get('resultList', [])
+                total_products = len(products_list)
                 count = 0
+                skipped_no_data = 0
+                skipped_invalid_image = 0
+                skipped_other = 0
                 
                 # 客户端关键词过滤
                 for cj_prod_data in products_list:
@@ -121,7 +216,11 @@ class ProductRetriever:
                         keywords_lower = keywords.lower()
                         
                         if keywords_lower not in title and keywords_lower not in description:
+                            skipped_other += 1
                             continue  # 跳过不匹配关键词的产品
+                    
+                    # 记录初始imageLink用于后续比较
+                    has_image_link = bool(cj_prod_data.get('imageLink'))
                     
                     unified_prod = self._cj_product_to_unified(cj_prod_data, brand_name, 'cj')
                     if unified_prod:
@@ -129,6 +228,19 @@ class ProductRetriever:
                         count += 1
                         if count >= limit:  # 已达到我们为该品牌请求的上限
                             break
+                    else:
+                        # 统计被跳过的原因
+                        if not has_image_link:
+                            skipped_no_data += 1
+                        elif has_image_link and not self._is_valid_image_url(cj_prod_data.get('imageLink')):
+                            skipped_invalid_image += 1
+                        else:
+                            skipped_other += 1
+                
+                # 添加统计信息到日志
+                logger.info(f"CJ 产品统计 - 总计: {total_products}, 成功转换: {len(unified_products)}, "
+                           f"跳过(无图片数据): {skipped_no_data}, 跳过(图片链接无效): {skipped_invalid_image}, "
+                           f"跳过(其他原因): {skipped_other}")
             else:
                 error_info = raw_cj_data.get('errors') if raw_cj_data else "No data returned"
                 logger.error(f"从 CJ API 获取品牌 '{brand_name}' (Advertiser ID: {advertiser_id}) 的产品失败。错误: {error_info}")
@@ -170,6 +282,11 @@ class ProductRetriever:
                 return None
             if not pj_product.get('image_url'):
                 logger.warning(f"Pepperjam 产品缺少 image_url (Name: {pj_product.get('name')})")
+                return None
+                
+            # 添加图片链接有效性验证
+            if not self._is_valid_image_url(pj_product.get('image_url')):
+                logger.warning(f"Pepperjam 产品图片链接无效 (ID: {pj_product.get('id', 'N/A')}, Name: {pj_product.get('name', 'N/A')}, image_url: {pj_product.get('image_url')}). 跳过此产品.")
                 return None
 
             # Pepperjam API 的库存状态可能在 `stock_availability` 或类似字段，或者通过描述判断
@@ -221,14 +338,35 @@ class ProductRetriever:
 
             if raw_pj_data and raw_pj_data.get('meta', {}).get('status', {}).get('code') == 200 and 'data' in raw_pj_data:
                 products_list = raw_pj_data['data']
+                total_products = len(products_list)
                 count = 0
+                skipped_no_data = 0
+                skipped_invalid_image = 0
+                skipped_other = 0
+                
                 for pj_prod_data in products_list:
+                    # 记录初始image_url用于后续比较
+                    has_image_url = bool(pj_prod_data.get('image_url'))
+                    
                     unified_prod = self._pepperjam_product_to_unified(pj_prod_data, brand_name, program_id)
                     if unified_prod:
                         unified_products.append(unified_prod)
                         count += 1
                         if count >= limit:
                             break # 已达到我们为该品牌请求的上限
+                    else:
+                        # 统计被跳过的原因
+                        if not has_image_url:
+                            skipped_no_data += 1
+                        elif has_image_url and not self._is_valid_image_url(pj_prod_data.get('image_url')):
+                            skipped_invalid_image += 1
+                        else:
+                            skipped_other += 1
+                
+                # 添加统计信息到日志
+                logger.info(f"Pepperjam 产品统计 - 总计: {total_products}, 成功转换: {len(unified_products)}, "
+                           f"跳过(无图片数据): {skipped_no_data}, 跳过(图片链接无效): {skipped_invalid_image}, "
+                           f"跳过(其他原因): {skipped_other}")
             else:
                 status_code = raw_pj_data.get('meta', {}).get('status', {}).get('code') if raw_pj_data and raw_pj_data.get('meta') else "N/A"
                 error_msg = raw_pj_data.get('meta', {}).get('status', {}).get('message') if raw_pj_data and raw_pj_data.get('meta') else "No data returned or error"

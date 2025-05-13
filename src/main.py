@@ -64,6 +64,13 @@ def main():
         action="store_true",
         help="Enable verbose logging (DEBUG level)."
     )
+    
+    # 添加 test 参数
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Run in test mode: fetch only 1 product per brand instead of the default 75."
+    )
 
     args = parser.parse_args()
 
@@ -107,6 +114,10 @@ def main():
     # 如果指定了 verbose，记录详细日志模式已启用
     if args.verbose:
         logger.debug("详细日志模式已启用 - 将记录所有DEBUG级别信息。")
+        
+    # 如果指定了 test 模式，记录测试模式已启用
+    if args.test:
+        logger.info("测试模式已启用 - 每个品牌将只获取1个产品进行同步。")
 
     # 检查必要的环境变量是否设置
     required_env_vars = [
@@ -122,10 +133,11 @@ def main():
 
     # 初始化编排器 (传递 dry_run 标志 - Checklist Item 11)
     try:
-        logger.info(f"初始化 SyncOrchestrator... (Dry Run: {args.dry_run})")
-        orchestrator = SyncOrchestrator(dry_run=args.dry_run)
+        logger.info(f"初始化 SyncOrchestrator... (Dry Run: {args.dry_run}, Test Mode: {args.test})")
+        orchestrator = SyncOrchestrator(dry_run=args.dry_run, test_mode=args.test)
+        logger.debug(f"在 main.py 中创建 orchestrator 后，传递的 test_mode={args.test}, orchestrator.test_mode={orchestrator.test_mode}")
     except Exception as init_e:
-        logger.error(f"初始化 SyncOrchestrator 失败: {init_e}", exc_info=True) # Loguru 自动处理 exc_info
+        logger.error(f"初始化 SyncOrchestrator 失败: {init_e}", exc_info=True)
         sys.exit(1)
 
     # 确定要同步的品牌和关键词
@@ -225,6 +237,9 @@ def main():
 
     if args.dry_run:
         logger.warning("*** DRY RUN 模式已启用，不会对 Shopify 进行任何实际更改。 ***")
+        
+    if args.test:
+        logger.warning("*** 测试模式已启用，每个品牌只会获取1个产品。 ***")
 
     try:
         if len(brands_to_sync) == 1:
@@ -242,6 +257,10 @@ def main():
     # 在dry run模式下添加日志文件位置提示
     if args.dry_run:
         logger.info(f"Dry Run完成，完整日志已保存到模板路径: {log_file_path_template} (实际文件名会包含时间戳)")
+        
+    # 在测试模式下添加提示
+    if args.test:
+        logger.info(f"测试模式执行完毕。请检查日志以确认每个品牌的产品获取和同步是否正常。")
 
 if __name__ == "__main__":
     main() 
