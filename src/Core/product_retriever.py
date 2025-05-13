@@ -19,6 +19,8 @@ except ImportError:
     logger.warning("未能导入 PepperjamPublisherAPI. 请确保 Ascend 模块及其依赖项已正确安装和配置，如果需要使用 Pepperjam API 的话。")
     PepperjamPublisherAPI = None
 
+MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED = 100 # 新增：限制从API响应中扫描的最大原始产品数量
+
 class ProductRetriever:
     """负责从 CJ 和 Pepperjam API 获取产品数据，并将其转换为 UnifiedProduct 对象列表。"""
 
@@ -195,52 +197,60 @@ class ProductRetriever:
         try:
             # 使用 get_products_by_advertiser 直接获取指定广告商的产品
             # 注意：此方法不支持关键词筛选，我们需要在获取数据后在客户端进行筛选
-            raw_cj_data = get_products_by_advertiser(advertiser_id=advertiser_id, limit=limit * 2)
+            # Fetch a bit more initially to allow for filtering, but still respect a reasonable upper bound for the initial fetch.
+            # The actual number of products processed will be further limited by MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED.
+            initial_fetch_limit = max(limit * 5, MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED + 10) # Ensure we fetch enough to scan, up to a point
+            raw_cj_data = get_products_by_advertiser(advertiser_id=advertiser_id, limit=initial_fetch_limit) 
 
             if raw_cj_data and raw_cj_data.get('data') and raw_cj_data['data'].get('products'):
                 products_list = raw_cj_data['data']['products'].get('resultList', [])
-                total_products = len(products_list)
+                total_products_fetched_in_call = len(products_list)
                 count = 0
-                skipped_no_data = 0
-                skipped_invalid_image = 0
-                skipped_other = 0
+                skipped_no_data = 0 
+                skipped_invalid_image = 0 
+                skipped_keyword_mismatch = 0 
+                skipped_other_reasons = 0 
+                attempted_cj_products_count = 0 # 新增：尝试处理的产品计数器
                 
-                # 客户端关键词过滤
                 for cj_prod_data in products_list:
-                    # 不需要检查advertiserId，因为get_products_by_advertiser已经按广告商ID过滤
-                    # 如果有关键词，进行客户端筛选
+                    attempted_cj_products_count += 1
+                    if attempted_cj_products_count > MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED and count < limit:
+                        logger.warning(f"CJ: For '{brand_name}', scanned {MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED} raw products from API feed but only found {count}/{limit} valid ones. Stopping scan for this brand.")
+                        break
+
                     if keywords and keywords.strip():
-                        # 在标题和描述中搜索关键词
                         title = cj_prod_data.get('title', '').lower()
                         description = cj_prod_data.get('description', '').lower()
-                        keywords_lower = keywords.lower()
+                        individual_keywords = keywords.strip().lower().split() 
                         
-                        if keywords_lower not in title and keywords_lower not in description:
-                            skipped_other += 1
-                            continue  # 跳过不匹配关键词的产品
-                    
-                    # 记录初始imageLink用于后续比较
-                    has_image_link = bool(cj_prod_data.get('imageLink'))
+                        keyword_match_found = False
+                        for kw in individual_keywords:
+                            if kw in title or kw in description:
+                                keyword_match_found = True
+                                break 
+                        
+                        if not keyword_match_found:
+                            skipped_keyword_mismatch += 1
+                            continue  
                     
                     unified_prod = self._cj_product_to_unified(cj_prod_data, brand_name, 'cj')
                     if unified_prod:
                         unified_products.append(unified_prod)
                         count += 1
-                        if count >= limit:  # 已达到我们为该品牌请求的上限
+                        if count >= limit:  
                             break
                     else:
-                        # 统计被跳过的原因
-                        if not has_image_link:
-                            skipped_no_data += 1
-                        elif has_image_link and not self._is_valid_image_url(cj_prod_data.get('imageLink')):
-                            skipped_invalid_image += 1
+                        if not cj_prod_data.get('link') or not cj_prod_data.get('title') or not cj_prod_data.get('imageLink'):
+                            skipped_no_data +=1
+                        elif cj_prod_data.get('imageLink') and not self._is_valid_image_url(cj_prod_data.get('imageLink')):
+                             skipped_invalid_image += 1
                         else:
-                            skipped_other += 1
+                            skipped_other_reasons += 1
                 
-                # 添加统计信息到日志
-                logger.info(f"CJ 产品统计 - 总计: {total_products}, 成功转换: {len(unified_products)}, "
-                           f"跳过(无图片数据): {skipped_no_data}, 跳过(图片链接无效): {skipped_invalid_image}, "
-                           f"跳过(其他原因): {skipped_other}")
+                logger.info(f"CJ 产品统计 for '{brand_name}' - API调用获取: {total_products_fetched_in_call}, 扫描原始产品数: {attempted_cj_products_count}, 成功转换: {len(unified_products)}, "
+                           f"跳过(关键词不匹配): {skipped_keyword_mismatch}, "
+                           f"跳过(缺少核心数据): {skipped_no_data}, 跳过(图片链接无效): {skipped_invalid_image}, "
+                           f"跳过(其他转换原因): {skipped_other_reasons}")
             else:
                 error_info = raw_cj_data.get('errors') if raw_cj_data else "No data returned"
                 logger.error(f"从 CJ API 获取品牌 '{brand_name}' (Advertiser ID: {advertiser_id}) 的产品失败。错误: {error_info}")
@@ -326,47 +336,48 @@ class ProductRetriever:
         logger.info(f"正在从 Pepperjam API 获取品牌 '{brand_name}' (Program ID: {program_id}) 的产品，关键词: '{keywords}', 限制: {limit}")
         unified_products: List[UnifiedProduct] = []
         try:
-            # PepperjamPublisherAPI.get_publisher_product_creatives 支持 keywords, program_ids, limit
-            # 我们将 program_ids 设置为单个 program_id
-            # API 最多返回2500条，我们客户端截取 limit
+            # Pepperjam API can return up to 2500. We fetch a large batch then apply our MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED.
             raw_pj_data = self.pepperjam_client.get_publisher_product_creatives(
                 program_ids=program_id,
                 keywords=keywords,
-                page=1, # 假设我们只需要第一页，或实现分页逻辑
-                limit=2500 # 获取API允许的最大数量，然后客户端截取
+                page=1, 
+                limit=2500 # Fetch a large batch from API
             )
 
             if raw_pj_data and raw_pj_data.get('meta', {}).get('status', {}).get('code') == 200 and 'data' in raw_pj_data:
                 products_list = raw_pj_data['data']
-                total_products = len(products_list)
+                total_products_fetched_in_call = len(products_list)
                 count = 0
-                skipped_no_data = 0
+                skipped_no_data = 0 
                 skipped_invalid_image = 0
-                skipped_other = 0
+                skipped_other_reasons = 0 
+                attempted_pj_products_count = 0 # 新增：尝试处理的产品计数器
                 
                 for pj_prod_data in products_list:
-                    # 记录初始image_url用于后续比较
-                    has_image_url = bool(pj_prod_data.get('image_url'))
+                    attempted_pj_products_count += 1
+                    if attempted_pj_products_count > MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED and count < limit:
+                        logger.warning(f"Pepperjam: For '{brand_name}', scanned {MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED} raw products from API feed but only found {count}/{limit} valid ones. Stopping scan for this brand.")
+                        break
+                    
+                    has_image_url = bool(pj_prod_data.get('image_url')) 
                     
                     unified_prod = self._pepperjam_product_to_unified(pj_prod_data, brand_name, program_id)
                     if unified_prod:
                         unified_products.append(unified_prod)
                         count += 1
                         if count >= limit:
-                            break # 已达到我们为该品牌请求的上限
+                            break 
                     else:
-                        # 统计被跳过的原因
-                        if not has_image_url:
-                            skipped_no_data += 1
+                        if not pj_prod_data.get('buy_url') or not pj_prod_data.get('image_url') or not pj_prod_data.get('price'):
+                             skipped_no_data += 1
                         elif has_image_url and not self._is_valid_image_url(pj_prod_data.get('image_url')):
-                            skipped_invalid_image += 1
+                             skipped_invalid_image += 1
                         else:
-                            skipped_other += 1
+                             skipped_other_reasons += 1
                 
-                # 添加统计信息到日志
-                logger.info(f"Pepperjam 产品统计 - 总计: {total_products}, 成功转换: {len(unified_products)}, "
-                           f"跳过(无图片数据): {skipped_no_data}, 跳过(图片链接无效): {skipped_invalid_image}, "
-                           f"跳过(其他原因): {skipped_other}")
+                logger.info(f"Pepperjam 产品统计 for '{brand_name}' - API调用获取: {total_products_fetched_in_call}, 扫描原始产品数: {attempted_pj_products_count}, 成功转换: {len(unified_products)}, "
+                           f"跳过(缺少核心数据): {skipped_no_data}, 跳过(图片链接无效): {skipped_invalid_image}, "
+                           f"跳过(其他转换原因): {skipped_other_reasons}")
             else:
                 status_code = raw_pj_data.get('meta', {}).get('status', {}).get('code') if raw_pj_data and raw_pj_data.get('meta') else "N/A"
                 error_msg = raw_pj_data.get('meta', {}).get('status', {}).get('message') if raw_pj_data and raw_pj_data.get('meta') else "No data returned or error"
