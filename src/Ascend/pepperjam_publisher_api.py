@@ -79,7 +79,7 @@ class PepperjamPublisherAPI:
             "apiKey": self.api_key,
             "format": "json"
         }
-        
+            
         # 如果有额外参数，添加到请求参数中
         if params:
             request_params.update(params)
@@ -150,6 +150,9 @@ class PepperjamPublisherAPI:
                 # 打印响应内容以便调试
                 logger.debug(f"响应状态码: {response.status_code}")
                 logger.debug(f"响应头: {response.headers}")
+                logger.debug(f"--- API 原始响应文本 ---")
+                logger.debug(response.text)
+                logger.debug(f"--- API 原始响应文本结束 ---")
                 
                 # 尝试解析响应
                 try:
@@ -157,7 +160,7 @@ class PepperjamPublisherAPI:
                     logger.info(f"请求成功, 状态码: {response_data.get('meta', {}).get('status', {}).get('code')}")
                     return response_data
                 except json.JSONDecodeError:
-                    logger.error(f"JSON解析错误，原始响应内容: {response.text[:500]}...")
+                    logger.error(f"JSON解析错误。前面已记录原始响应文本。")
                     if retry_count < max_retries - 1:
                         retry_count += 1
                         time.sleep(2 ** retry_count)

@@ -66,24 +66,33 @@ class SyncOrchestrator:
         return f"{brand_slug}-{api_slug}-{safe_source_product_id}"
 
     def _filter_products_by_keywords(self, products: List[UnifiedProduct], user_keywords: List[str]) -> List[UnifiedProduct]:
-        """根据用户提供的关键词列表筛选产品。"""
+        """根据用户提供的关键词列表筛选产品 (AND 逻辑)。"""
         if not user_keywords:
             return products # 如果没有关键词，返回所有产品
         
         filtered_products: List[UnifiedProduct] = []
         for product in products:
-            product.keywords_matched = [] # 重置匹配的关键词
-            match_found = False
-            for keyword in user_keywords:
-                kw_lower = keyword.lower()
-                # 检查标题和描述是否包含关键词 (不区分大小写)
-                if (product.title and kw_lower in product.title.lower()) or \
-                   (product.description and kw_lower in product.description.lower()):
-                    if keyword not in product.keywords_matched:
-                        product.keywords_matched.append(keyword)
-                    match_found = True
+            product.keywords_matched = [] # 清空之前可能存在的匹配
+            all_phrases_matched_for_this_product = True # 先假设产品匹配所有关键词
             
-            if match_found:
+            temp_matched_phrases = [] # 用于临时存储当前产品匹配的关键词短语
+
+            for keyword_phrase in user_keywords: # keyword_phrase 是 "Work Boot" 或 "Waterproof"
+                phrase_lower = keyword_phrase.lower()
+                # 检查当前短语是否在标题或描述中
+                if not ((product.title and phrase_lower in product.title.lower()) or \
+                       (product.description and phrase_lower in product.description.lower())):
+                    all_phrases_matched_for_this_product = False # 只要有一个短语不匹配，则此产品不符合AND条件
+                    break # 无需再检查此产品的其他短语
+                else:
+                    # 如果当前短语匹配，则记录下来
+                    if keyword_phrase not in temp_matched_phrases: # 避免重复添加（理论上不应重复，因为user_keywords是列表）
+                         temp_matched_phrases.append(keyword_phrase)
+            
+            if all_phrases_matched_for_this_product:
+                # 如果所有短语都匹配了，将所有实际匹配的短语（来自 temp_matched_phrases）添加到keywords_matched
+                # 或者，更符合原意的是，如果产品通过了所有关键词的AND检查，那么它就匹配了所有user_keywords
+                product.keywords_matched.extend(user_keywords) 
                 filtered_products.append(product)
         return filtered_products
 
@@ -133,7 +142,7 @@ class SyncOrchestrator:
         fetch_limit = int(self.PRODUCTS_PER_BRAND_TARGET * self.API_FETCH_LIMIT_MULTIPLIER)
         
         # 将关键词列表转换为空格分隔的字符串，因为某些API客户端可能期望这种格式
-        keywords_for_api = ' '.join(user_keywords) if user_keywords else "" # 如果没有关键词，则为空字符串
+        # keywords_for_api = ' '.join(user_keywords) if user_keywords else "" # <--- 移除此行
         # 注意: CJ Retriever 的 fetch_cj_products 内部使用单个关键词参数，
         # 而 Pepperjam Retriever 的 fetch_pepperjam_products 也使用单个关键词字符串。
         # 如果API期望不同的关键词格式，需要在此处调整或在Retriever中处理。
@@ -143,14 +152,14 @@ class SyncOrchestrator:
             raw_api_products = self.product_retriever.fetch_cj_products(
                 advertiser_id=api_id, 
                 brand_name=brand_name, 
-                keywords=keywords_for_api, # 传递给CJ Retriever
+                keywords_list=user_keywords, # <--- 修改这里，直接传递列表
                 limit=fetch_limit
             )
         elif api_type == 'pepperjam':
             raw_api_products = self.product_retriever.fetch_pepperjam_products(
                 program_id=api_id, 
                 brand_name=brand_name, 
-                keywords=keywords_for_api, # 传递给Pepperjam Retriever
+                keywords_list=user_keywords, # <--- 修改这里，直接传递列表
                 limit=fetch_limit
             )
         else:
