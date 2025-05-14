@@ -48,6 +48,9 @@ class SyncOrchestrator:
         logger.info(f"SyncOrchestrator 初始化接收参数: dry_run={dry_run}, test_mode={test_mode}")
         logger.info(f"SyncOrchestrator 实例属性: self.dry_run={self.dry_run}, self.test_mode={self.test_mode}")
         
+        self.successful_brands_count: int = 0
+        self.failed_brands_info: Dict[str, str] = {}
+
         if self.test_mode:
             self.PRODUCTS_PER_BRAND_TARGET = 1
             logger.info("测试模式已在 SyncOrchestrator 中激活，每个品牌将只获取1个产品")
@@ -104,7 +107,7 @@ class SyncOrchestrator:
             
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             # 清理品牌名称以用于文件名
-            safe_brand_name = re.sub(r'[^\w\-]+', '_', brand_name)
+            safe_brand_name = re.sub(r'[^\w.-]+', '_', brand_name) # Original regex for JSON, ensure hyphen at end for safety.
             file_path = output_dir / f"dry_run_export_{safe_brand_name}_{timestamp}.json"
             
             # 将 UnifiedProduct 对象列表转换为字典列表
@@ -113,9 +116,89 @@ class SyncOrchestrator:
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(products_dict_list, f, indent=2, ensure_ascii=False)
             
-            logger.info(f"DRY RUN: 已将 {len(products)} 个产品导出到: {file_path}")
+            logger.info(f"DRY RUN (JSON): 已将 {len(products)} 个产品导出到: {file_path}")
         except Exception as e:
-            logger.error(f"DRY RUN: 保存导出文件时出错 for brand '{brand_name}': {e}", exc_info=True)
+            logger.error(f"DRY RUN (JSON): 保存JSON导出文件时出错 for brand '{brand_name}': {e}", exc_info=True)
+
+    def _generate_markdown_for_product(self, product: UnifiedProduct, index: int) -> str:
+        """Generates a Markdown string for a single UnifiedProduct."""
+        markdown_parts = []
+        markdown_parts.append(f"## {index}. {product.title if product.title else 'N/A'}")
+        markdown_parts.append(f"- **SKU:** `{product.sku if product.sku else 'N/A'}`")
+        markdown_parts.append(f"- **Source API:** `{product.source_api if product.source_api else 'N/A'}`")
+        markdown_parts.append(f"- **Source Product ID:** `{product.source_product_id if product.source_product_id else 'N/A'}`")
+        markdown_parts.append(f"- **Brand:** `{product.brand_name if product.brand_name else 'N/A'}`")
+
+        price_str = f"{product.price} {product.currency}" if product.price is not None and product.currency else "N/A"
+        if product.currency == "USD":
+            price_str = f"${product.price:.2f} {product.currency}" if product.price is not None else "N/A"
+        markdown_parts.append(f"- **Price:** {price_str}")
+
+        if product.sale_price is not None and product.price is not None and product.sale_price < product.price:
+            sale_price_str = f"{product.sale_price} {product.currency}"
+            if product.currency == "USD":
+                sale_price_str = f"${product.sale_price:.2f} {product.currency}"
+            markdown_parts.append(f"- **Sale Price:** {sale_price_str}")
+
+        availability_str = "Available" if product.availability else "Out of Stock"
+        markdown_parts.append(f"- **Availability:** {availability_str}")
+
+        if product.categories:
+            markdown_parts.append("- **Categories:**")
+            for cat in product.categories:
+                markdown_parts.append(f"    - {cat}")
+        
+        if product.keywords_matched:
+            markdown_parts.append("- **Matched Keywords:**")
+            for kw in product.keywords_matched:
+                markdown_parts.append(f"    - {kw}")
+
+        markdown_parts.append(f"- **Affiliate Link:** {product.product_url if product.product_url else 'N/A'}")
+        markdown_parts.append(f"- **Image URL:** {product.image_url if product.image_url else 'N/A'}")
+        
+        description_snippet = (product.description[:250] + '...') if product.description and len(product.description) > 250 else (product.description if product.description else 'N/A')
+        markdown_parts.append("- **Description:**")
+        markdown_parts.append(f"  ```")
+        markdown_parts.append(f"  {description_snippet}")
+        markdown_parts.append(f"  ```")
+        markdown_parts.append("\n---") # Separator
+
+        return "\n".join(markdown_parts)
+
+    def _save_markdown_dry_run_export(self, products: List[UnifiedProduct], brand_name: str):
+        """Saves the list of products to a Markdown file during a dry run."""
+        if not products:
+            logger.info(f"DRY RUN (MD): No products to export for brand '{brand_name}'.")
+            return
+
+        try:
+            output_dir = Path("output") / "dry_run_exports"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            current_time = datetime.now()
+            timestamp_file = current_time.strftime('%Y%m%d_%H%M%S')
+            timestamp_header = current_time.strftime('%Y-%m-%d %H:%M:%S')
+
+            safe_brand_name = re.sub(r'[^\w.-]+', '_', brand_name) # Allow word chars, dots, hyphens. Hyphen at end for safety.
+            file_path = output_dir / f"dry_run_export_MD_{safe_brand_name}_{timestamp_file}.md"
+            
+            markdown_content_parts = []
+            markdown_content_parts.append(f"# Dry Run Export: {brand_name} - {timestamp_header}")
+            markdown_content_parts.append(f"\nTotal products to be synced for this brand: {len(products)}\n")
+            markdown_content_parts.append("---")
+
+            for i, product in enumerate(products):
+                markdown_content_parts.append(self._generate_markdown_for_product(product, i + 1))
+            
+            full_markdown_content = "\n".join(markdown_content_parts)
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(full_markdown_content)
+            
+            logger.info(f"DRY RUN (MD): Exported {len(products)} products for brand '{brand_name}' to: {file_path}")
+
+        except Exception as e:
+            logger.error(f"DRY RUN (MD): Error saving Markdown export for brand '{brand_name}': {e}", exc_info=True)
 
     def run_sync_for_brand(self, brand_name: str, user_keywords_str: Optional[str] = None):
         """
@@ -128,7 +211,8 @@ class SyncOrchestrator:
         logger.info(f"--- 开始为品牌 '{brand_name}' 同步 (关键词: {user_keywords_str or '无'}) ---")
         
         if brand_name not in self.brand_config:
-            logger.error(f"品牌 '{brand_name}' 未在 BRAND_CONFIG 中配置。跳过此品牌。")
+            logger.error(f"品牌 '{brand_name}' 未在 BRAND_CONFIG 中配置。将其标记为失败。")
+            self.failed_brands_info[brand_name] = "品牌未在 BRAND_CONFIG 中配置"
             return
 
         config = self.brand_config[brand_name]
@@ -163,11 +247,15 @@ class SyncOrchestrator:
                 limit=fetch_limit
             )
         else:
-            logger.error(f"未知的 API 类型 '{api_type}' 配置给品牌 '{brand_name}'。")
+            logger.error(f"未知的 API 类型 '{api_type}' 配置给品牌 '{brand_name}'。将其标记为失败。")
+            self.failed_brands_info[brand_name] = f"未知的API类型配置: {api_type}"
             return
 
         if not raw_api_products:
-            logger.warning(f"未能从 API ({api_type}) 获取品牌 '{brand_name}' 的任何产品。结束此品牌的同步。")
+            # logger.warning(f"未能从 API ({api_type}) 获取品牌 '{brand_name}' 的任何产品。将其标记为获取失败。") # 旧代码
+            log_message = f"未能从 API ({api_type}) 获取品牌 '{brand_name}' 的任何产品。将其标记为获取失败。"
+            logger.bind(brand_fetch_error=True).warning(log_message)
+            self.failed_brands_info[brand_name] = f"API产品获取失败 (未从 {api_type} 返回任何产品)"
             return
         logger.info(f"从 API ({api_type}) 为品牌 '{brand_name}' 获取到 {len(raw_api_products)} 个原始产品。")
 
@@ -189,8 +277,9 @@ class SyncOrchestrator:
 
         # --- Dry Run Export Logic ---
         if self.dry_run and final_products_to_sync:
-            logger.info(f"DRY RUN 模式：准备导出 {len(final_products_to_sync)} 个产品到 JSON...")
-            self._save_dry_run_export(final_products_to_sync, brand_name)
+            logger.info(f"DRY RUN 模式：准备导出 {len(final_products_to_sync)} 个产品到 JSON 和 Markdown...") # Updated log
+            self._save_dry_run_export(final_products_to_sync, brand_name) # For JSON
+            self._save_markdown_dry_run_export(final_products_to_sync, brand_name) # For Markdown
         # --- End Dry Run Export Logic ---
 
         # 3. Shopify 主草稿产品系列管理
@@ -209,11 +298,13 @@ class SyncOrchestrator:
                 body_html=f"Automatically synced products for {brand_name} from {api_type.upper()} API. For internal review and activation."
             )
             if not shopify_master_collection:
-                logger.error(f"无法获取或创建主草稿产品系列 '{master_collection_title}'。中止品牌 '{brand_name}' 的同步。")
+                logger.error(f"无法获取或创建主草稿产品系列 '{master_collection_title}'。将品牌 '{brand_name}' 标记为失败。")
+                self.failed_brands_info[brand_name] = "Shopify主产品系列处理失败 (无法获取或创建)"
                 return
             logger.info(f"主草稿产品系列 '{shopify_master_collection.title}' (ID: {shopify_master_collection.id}) 已就绪。")
         except Exception as e_coll:
-            logger.error(f"处理主草稿产品系列时出错: {e_coll}。中止品牌 '{brand_name}' 的同步。", exc_info=True)
+            logger.error(f"处理主草稿产品系列时出错: {e_coll}。将品牌 '{brand_name}' 标记为失败。", exc_info=True)
+            self.failed_brands_info[brand_name] = f"Shopify主产品系列处理时发生异常: {str(e_coll)[:100]}" # Truncate long error messages
             return
 
         # 4. 获取当前主草稿产品系列中的产品SKU，用于后续比较和清理
@@ -228,8 +319,11 @@ class SyncOrchestrator:
 
         # 5. 同步产品到 Shopify
         synced_skus_this_run = set()
-        logger.debug(f"在 run_sync_for_brand 中，即将使用的 shopify_connector 的 test_mode: {self.shopify_connector.test_mode}, dry_run: {self.shopify_connector.dry_run}") # 添加日志
+        product_sync_attempt_count = 0
+        product_sync_success_count = 0
+        logger.debug(f"在 run_sync_for_brand 中，即将使用的 shopify_connector 的 test_mode: {self.shopify_connector.test_mode}, dry_run: {self.shopify_connector.dry_run}")
         for unified_product in final_products_to_sync:
+            product_sync_attempt_count += 1
             # 生成/确保 SKU
             if not unified_product.sku: # 理论上 UnifiedProduct 的 __post_init__ 已处理
                 unified_product.sku = self._generate_sku(brand_name, api_type, unified_product.source_product_id)
@@ -259,6 +353,7 @@ class SyncOrchestrator:
                         # 如果产品是草稿状态，确保它在主草稿集合中
                         if shopify_product_to_manage.published_at is None: 
                             self.shopify_connector.add_product_to_collection(shopify_product_to_manage.id, shopify_master_collection.id)
+                        product_sync_success_count +=1 # Increment success count here
                 else:
                     logger.info(f"产品 SKU '{unified_product.sku}' 不存在于 Shopify。准备创建...")
                     # 新产品默认为 draft 状态，并由 create_product 处理
@@ -277,6 +372,7 @@ class SyncOrchestrator:
                             value_type=METAFIELD_VALUE_TYPE_URL
                         )
                         logger.info(f"新产品 {new_shopify_product.id} 的联盟链接元字段已设置。")
+                        product_sync_success_count +=1 # Increment success count here
                 
                 # 可以在这里记录 unified_product.shopify_product_id (如果需要回写到 UnifiedProduct 对象)
                 if shopify_product_to_manage and hasattr(shopify_product_to_manage, 'id'):
@@ -291,7 +387,13 @@ class SyncOrchestrator:
                     f"类型: {error_type}, 消息: {error_message}",
                     exc_info=True 
                 )
-                continue 
+                continue # 继续处理下一个产品，即使当前产品失败
+        
+        # 在处理完所有选定产品后检查是否有任何产品同步成功
+        if final_products_to_sync and product_sync_success_count == 0: # 仅当尝试了产品但无一成功时才标记为失败
+            logger.error(f"品牌 '{brand_name}'：尝试同步 {product_sync_attempt_count} 个产品，但全部失败。将其标记为品牌级同步失败。")
+            self.failed_brands_info[brand_name] = "所有选定产品在同步到Shopify时均失败"
+            return # 标记为失败并返回
 
         # 6. 处理不再同步的产品 (从主草稿产品系列中移除或归档)
         # 这是复杂部分：需要获取 shopify_master_collection 中的所有产品，
@@ -311,15 +413,41 @@ class SyncOrchestrator:
             keywords_by_brand (Optional[Dict[str, str]]): 一个字典，键是品牌名称，值是该品牌的逗号分隔关键词字符串。
                                                        如果未提供或某品牌无关键词，则该品牌不按关键词筛选。
         """
-        logger.info("\n=== 开始对所有已配置品牌进行全面同步 ===")
+        self.successful_brands_count = 0
+        self.failed_brands_info = {}
+        logger.info("\n=== 开始对所有已配置品牌进行全面同步 (统计已重置) ===")
         if keywords_by_brand is None:
             keywords_by_brand = {}
         
         for brand_name in self.brand_config.keys():
             brand_keywords_str = keywords_by_brand.get(brand_name)
+            # 调用 run_sync_for_brand 之前，我们不知道它是否会失败并提前返回
+            # 因此，run_sync_for_brand 内部会处理失败记录
             self.run_sync_for_brand(brand_name, user_keywords_str=brand_keywords_str)
+            
+            # 在 run_sync_for_brand 调用之后，检查它是否将当前品牌标记为失败
+            if brand_name not in self.failed_brands_info:
+                self.successful_brands_count += 1
+                logger.info(f"品牌 '{brand_name}' 已成功处理完成。") # 移到此处，以确保仅在未标记为失败时记录
+            else:
+                # 失败信息和原因已在 run_sync_for_brand 内部的失败点记录到 self.failed_brands_info
+                # 并且 run_sync_for_brand 在这些点会提前 return，所以这里的日志可能不会显示每个品牌处理后的直接失败原因（如果适用）
+                # 但我们可以在总结中显示它
+                logger.warning(f"品牌 '{brand_name}' 处理标记为失败。详情见总结。")
         
-        logger.info("\n=== 所有品牌全面同步结束 ===")
+        logger.info("\n=== 全面同步处理总结 ===")
+        logger.info(f"总计成功处理的品牌数量: {self.successful_brands_count}")
+        
+        failed_brands_count = len(self.failed_brands_info)
+        logger.info(f"总计失败的品牌数量: {failed_brands_count}")
+        
+        if failed_brands_count > 0:
+            logger.info("--- 失败品牌详情 ---")
+            for brand, reason in self.failed_brands_info.items():
+                logger.info(f"  - 品牌: {brand}")
+                logger.info(f"    原因: {reason}")
+            logger.info("--- 失败品牌详情结束 ---")
+        logger.info("=== 全面同步处理总结结束 ===")
 
 # 示例用法 (将在 main.py 中调用)
 if __name__ == '__main__':

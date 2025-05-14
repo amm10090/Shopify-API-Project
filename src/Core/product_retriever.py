@@ -62,8 +62,9 @@ class ProductRetriever:
             return False
             
         try:
-            # 使用HEAD请求减少带宽使用
-            response = requests.head(url, timeout=timeout, allow_redirects=True)
+            common_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            request_headers = {'User-Agent': common_user_agent}
+            response = requests.head(url, timeout=timeout, allow_redirects=True, headers=request_headers)
             
             # 首先检查状态码 - 这是最重要的
             if response.status_code != 200:
@@ -90,7 +91,7 @@ class ProductRetriever:
             if 'cdn.shopify.com' in url and 'content-length' in response.headers:
                 # 仅对Shopify CDN和有内容长度的响应进行额外验证
                 try:
-                    with requests.get(url, timeout=timeout, stream=True) as get_response:
+                    with requests.get(url, timeout=timeout, stream=True, headers=request_headers) as get_response:
                         # 只读取前64字节来检查
                         chunk = get_response.raw.read(64)
                         
@@ -258,10 +259,10 @@ class ProductRetriever:
                            f"跳过(其他转换原因): {skipped_other_reasons}")
             else:
                 error_info = raw_cj_data.get('errors') if raw_cj_data else "No data returned"
-                logger.error(f"从 CJ API 获取品牌 '{brand_name}' (Advertiser ID: {advertiser_id}) 的产品失败。错误: {error_info}")
+                logger.bind(brand_fetch_error=True).error(f"从 CJ API 获取品牌 '{brand_name}' (Advertiser ID: {advertiser_id}) 的产品失败。错误: {error_info}")
 
         except Exception as e:
-            logger.error(f"从 CJ API 获取品牌 '{brand_name}' (Advertiser ID: {advertiser_id}) 产品时发生错误: {e}", exc_info=True)
+            logger.bind(brand_fetch_error=True).error(f"从 CJ API 获取品牌 '{brand_name}' (Advertiser ID: {advertiser_id}) 产品时发生错误: {e}", exc_info=True)
         
         logger.info(f"为品牌 '{brand_name}' (CJ) 获取并转换了 {len(unified_products)} 个产品。")
         return unified_products
@@ -395,10 +396,10 @@ class ProductRetriever:
             else:
                 status_code = raw_pj_data.get('meta', {}).get('status', {}).get('code') if raw_pj_data and raw_pj_data.get('meta') else "N/A"
                 error_msg = raw_pj_data.get('meta', {}).get('status', {}).get('message') if raw_pj_data and raw_pj_data.get('meta') else "No data returned or error"
-                logger.warning(f"Pepperjam API 获取品牌 '{brand_name}' (Program ID: {program_id})，关键词 '{api_keywords_str or '无'}' 的产品失败或无结果。状态码: {status_code}, 消息: {error_msg}")
+                logger.bind(brand_fetch_error=True).warning(f"Pepperjam API 获取品牌 '{brand_name}' (Program ID: {program_id})，关键词 '{api_keywords_str or '无'}' 的产品失败或无结果。状态码: {status_code}, 消息: {error_msg}")
         
         except Exception as e_api_call:
-            logger.error(f"Pepperjam API 调用获取品牌 '{brand_name}' (Program ID: {program_id}) 产品时发生错误: {e_api_call}", exc_info=True)
+            logger.bind(brand_fetch_error=True).error(f"Pepperjam API 调用获取品牌 '{brand_name}' (Program ID: {program_id}) 产品时发生错误: {e_api_call}", exc_info=True)
         
         # 现在处理收集到的 all_raw_products_data
         total_products_fetched_unique = len(all_raw_products_data)

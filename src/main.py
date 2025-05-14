@@ -111,6 +111,24 @@ def main():
     logger.info(f"控制台日志级别: {log_level_console}")
     logger.info(f"文件日志将保存到 (模板): {log_file_path_template}") # 记录模板路径
 
+    # 新的错误日志 sink 定义和添加
+    error_log_file_path_template = logs_dir / f"brand_fetch_errors_{{time:YYYYMMDD_HHmmss}}.log"
+
+    def brand_fetch_error_filter(record):
+        return record["extra"].get("brand_fetch_error") is True
+
+    logger.add(
+        error_log_file_path_template,
+        level="WARNING",
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+        filter=brand_fetch_error_filter,
+        rotation="5 MB",
+        retention="10 days",
+        encoding='utf-8',
+        enqueue=True
+    )
+    logger.info(f"品牌获取相关的错误将额外记录到 (模板): {error_log_file_path_template}")
+
     # 如果指定了 verbose，记录详细日志模式已启用
     if args.verbose:
         logger.debug("详细日志模式已启用 - 将记录所有DEBUG级别信息。")
