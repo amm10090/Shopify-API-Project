@@ -135,7 +135,7 @@ def main():
         
     # 如果指定了 test 模式，记录测试模式已启用
     if args.test:
-        logger.info("测试模式已启用 - 每个品牌将只获取1个产品进行同步。")
+        logger.info("测试模式已启用。将尝试为每个指定关键词获取一个产品；若无关键词，则为该品牌获取一个产品。")
 
     # 检查必要的环境变量是否设置
     required_env_vars = [
@@ -265,7 +265,7 @@ def main():
             keywords = keywords_for_sync.get(brand)
             orchestrator.run_sync_for_brand(brand, user_keywords_str=keywords)
         else:
-            orchestrator.run_full_sync(keywords_by_brand=keywords_for_sync)
+            orchestrator.run_full_sync(brands_to_process=brands_to_sync, keywords_by_brand=keywords_for_sync)
     except Exception as sync_e:
         logger.error(f"同步过程中发生未捕获的错误: {sync_e}", exc_info=True)
         sys.exit(1)

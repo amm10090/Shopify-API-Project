@@ -52,8 +52,8 @@ class SyncOrchestrator:
         self.failed_brands_info: Dict[str, str] = {}
 
         if self.test_mode:
-            self.PRODUCTS_PER_BRAND_TARGET = 1
-            logger.info("测试模式已在 SyncOrchestrator 中激活，每个品牌将只获取1个产品")
+            # self.PRODUCTS_PER_BRAND_TARGET = 1 # 移除或注释掉此行
+            logger.info("测试模式已在 SyncOrchestrator 中激活。产品获取数量将根据关键词调整，或默认为1（无关键词时）。")
             
         self.product_retriever = ProductRetriever()
         self.shopify_connector = ShopifyConnector(dry_run=self.dry_run, test_mode=self.test_mode) 
@@ -223,57 +223,128 @@ class SyncOrchestrator:
 
         # 1. 从API获取产品数据
         raw_api_products: List[UnifiedProduct] = []
-        fetch_limit = int(self.PRODUCTS_PER_BRAND_TARGET * self.API_FETCH_LIMIT_MULTIPLIER)
         
-        # 将关键词列表转换为空格分隔的字符串，因为某些API客户端可能期望这种格式
-        # keywords_for_api = ' '.join(user_keywords) if user_keywords else "" # <--- 移除此行
-        # 注意: CJ Retriever 的 fetch_cj_products 内部使用单个关键词参数，
-        # 而 Pepperjam Retriever 的 fetch_pepperjam_products 也使用单个关键词字符串。
-        # 如果API期望不同的关键词格式，需要在此处调整或在Retriever中处理。
-        # 对于我们的实现，`keywords_for_api` 将是一个空格分隔的字符串。
+        if self.test_mode and user_keywords:
+            logger.info(f"测试模式：品牌 '{brand_name}' 将为每个提供的关键词尝试获取产品。")
+            all_test_mode_products: List[UnifiedProduct] = []
+            processed_product_source_ids: set = set()
+            test_fetch_limit_per_keyword: int = 3 # 尝试获取3个，以增加命中机会，后续只选1个
 
-        if api_type == 'cj':
-            raw_api_products = self.product_retriever.fetch_cj_products(
-                advertiser_id=api_id, 
-                brand_name=brand_name, 
-                keywords_list=user_keywords, # <--- 修改这里，直接传递列表
-                limit=fetch_limit
-            )
-        elif api_type == 'pepperjam':
-            raw_api_products = self.product_retriever.fetch_pepperjam_products(
-                program_id=api_id, 
-                brand_name=brand_name, 
-                keywords_list=user_keywords, # <--- 修改这里，直接传递列表
-                limit=fetch_limit
-            )
+            for keyword_item in user_keywords:
+                logger.debug(f"测试模式：品牌 '{brand_name}', 为关键词 '{keyword_item}' 获取产品 (limit: {test_fetch_limit_per_keyword})...")
+                current_keyword_products: List[UnifiedProduct] = []
+                if api_type == 'cj':
+                    current_keyword_products = self.product_retriever.fetch_cj_products(
+                        advertiser_id=api_id, 
+                        brand_name=brand_name, 
+                        keywords_list=[keyword_item],
+                        limit=test_fetch_limit_per_keyword
+                    )
+                elif api_type == 'pepperjam':
+                    current_keyword_products = self.product_retriever.fetch_pepperjam_products(
+                        program_id=api_id, 
+                        brand_name=brand_name, 
+                        keywords_list=[keyword_item],
+                        limit=test_fetch_limit_per_keyword
+                    )
+                
+                for p in current_keyword_products:
+                    if p.source_product_id not in processed_product_source_ids:
+                        p.keywords_matched = [keyword_item] # 标记产品是由哪个关键词获取的
+                        all_test_mode_products.append(p)
+                        processed_product_source_ids.add(p.source_product_id)
+                        # 如果我们只想严格每个关键词一个，并且获取limit为1时，可以在这里break
+                        # 但由于limit可能大于1，我们收集所有独特的，然后在选择阶段精确挑选
+            raw_api_products = all_test_mode_products
+            logger.info(f"测试模式：为品牌 '{brand_name}' 通过 {len(user_keywords)} 个关键词共获取到 {len(raw_api_products)} 个独立候选产品。")
         else:
-            logger.error(f"未知的 API 类型 '{api_type}' 配置给品牌 '{brand_name}'。将其标记为失败。")
-            self.failed_brands_info[brand_name] = f"未知的API类型配置: {api_type}"
-            return
+            # 非测试模式，或测试模式但无关键词：使用原有逻辑
+            fetch_limit = int(self.PRODUCTS_PER_BRAND_TARGET * self.API_FETCH_LIMIT_MULTIPLIER)
+            if self.test_mode: # 测试模式但无关键词，目标为1个产品
+                fetch_limit = int(1 * self.API_FETCH_LIMIT_MULTIPLIER) # 获取少量用于选择1个
+            
+            logger.debug(f"品牌 '{brand_name}', API类型 '{api_type}', 完整关键词列表: {user_keywords}, 获取限制: {fetch_limit}")
+            if api_type == 'cj':
+                raw_api_products = self.product_retriever.fetch_cj_products(
+                    advertiser_id=api_id, 
+                    brand_name=brand_name, 
+                    keywords_list=user_keywords,
+                    limit=fetch_limit
+                )
+            elif api_type == 'pepperjam':
+                raw_api_products = self.product_retriever.fetch_pepperjam_products(
+                    program_id=api_id, 
+                    brand_name=brand_name, 
+                    keywords_list=user_keywords,
+                    limit=fetch_limit
+                )
 
         if not raw_api_products:
-            # logger.warning(f"未能从 API ({api_type}) 获取品牌 '{brand_name}' 的任何产品。将其标记为获取失败。") # 旧代码
-            log_message = f"未能从 API ({api_type}) 获取品牌 '{brand_name}' 的任何产品。将其标记为获取失败。"
-            logger.bind(brand_fetch_error=True).warning(log_message)
-            self.failed_brands_info[brand_name] = f"API产品获取失败 (未从 {api_type} 返回任何产品)"
+            base_log_message = f"未能从 API ({api_type}) 为品牌 '{brand_name}' 获取任何产品。"
+            base_failure_reason = f"API产品获取失败 (未从 {api_type} 返回任何产品)"
+            
+            detailed_parts = []
+            reason_parts = []
+
+            if self.test_mode:
+                detailed_parts.append("测试模式：")
+                reason_parts.append("(测试模式下)")
+
+            if user_keywords_str:
+                detailed_parts.append(f"尝试的关键词为: '{user_keywords_str}'.")
+                reason_parts.insert(0, f"尝试的关键词: '{user_keywords_str}'.") # 插入到原因前面
+            
+            log_message = f"{' '.join(detailed_parts)} {base_log_message}"
+            if not detailed_parts: # 如果没有详细信息部分，则使用原始基础消息避免前导空格
+                log_message = base_log_message
+            else:
+                log_message += " 详细的API调用日志请参见 ProductRetriever 输出。"
+
+            failure_reason = f"{' '.join(reason_parts)} {base_failure_reason}"
+            if not reason_parts: # 如果没有原因的附加部分
+                 failure_reason = base_failure_reason
+            else: # 确保基础原因在前面
+                failure_reason = f"{base_failure_reason} ({' '.join(reason_parts).strip()})"
+
+
+            logger.bind(brand_fetch_error=True).warning(log_message.strip() + " 将其标记为获取失败。")
+            self.failed_brands_info[brand_name] = failure_reason.strip()
             return
+
         logger.info(f"从 API ({api_type}) 为品牌 '{brand_name}' 获取到 {len(raw_api_products)} 个原始产品。")
 
-        # 2. 过滤产品 (有货优先，然后按关键词，最后取目标数量)
+        # 2. 过滤产品 (有货优先)
         available_products = [p for p in raw_api_products if p.availability]
         logger.info(f"其中 {len(available_products)} 个产品有货。")
 
-        # 根据用户提供的关键词进行筛选 (如果提供了关键词)
-        # _filter_products_by_keywords 会处理空关键词列表的情况
-        keyword_filtered_products = self._filter_products_by_keywords(available_products, user_keywords)
-        if user_keywords:
-            logger.info(f"根据关键词 '{user_keywords_str}' 筛选后剩下 {len(keyword_filtered_products)} 个产品。")
-        else:
-            logger.info("未提供关键词，使用所有有货产品进行下一步。")
+        # 根据用户提供的关键词进行筛选 和 最终产品选择
+        final_products_to_sync: List[UnifiedProduct] = []
 
-        # 选择最终要同步的产品列表 (取前N个)
-        final_products_to_sync = keyword_filtered_products[:self.PRODUCTS_PER_BRAND_TARGET]
-        logger.info(f"最终选择 {len(final_products_to_sync)} 个产品进行 Shopify 同步。")
+        if self.test_mode and user_keywords:
+            # 测试模式且有关键词: 为每个关键词选择一个产品
+            keyword_filtered_products = available_products # 产品已按单个关键词获取并标记，且已筛选有货
+            final_products_to_sync_map: Dict[str, UnifiedProduct] = {}
+            for product in keyword_filtered_products:
+                if product.keywords_matched: # 应该包含获取它的那个关键词
+                    current_product_keyword = product.keywords_matched[0]
+                    if current_product_keyword not in final_products_to_sync_map: # 只为每个原始关键词选一个
+                        final_products_to_sync_map[current_product_keyword] = product
+            
+            final_products_to_sync = list(final_products_to_sync_map.values())
+            logger.info(f"测试模式：为品牌 '{brand_name}'，针对 {len(user_keywords)} 个关键词，最终选定 {len(final_products_to_sync)} 个产品进行同步。")
+        else:
+            # 非测试模式，或测试模式但无关键词
+            keyword_filtered_products = self._filter_products_by_keywords(available_products, user_keywords)
+            if user_keywords and not self.test_mode : # 仅在非测试模式且有关键词时记录AND过滤结果
+                 logger.info(f"根据组合关键词 '{user_keywords_str}' (AND逻辑) 筛选后剩下 {len(keyword_filtered_products)} 个产品。")
+            elif not user_keywords:
+                 logger.info("未提供关键词，使用所有有货产品进行下一步选择。")
+            # 对于测试模式无关键词，上面已处理，这里 keyword_filtered_products 就是 available_products
+            
+            current_target_limit = 1 if self.test_mode else self.PRODUCTS_PER_BRAND_TARGET
+            final_products_to_sync = keyword_filtered_products[:current_target_limit]
+            log_mode_detail = "测试(无关键词)" if self.test_mode else ("正常(有关键词)" if user_keywords else "正常(无关键词)")
+            logger.info(f"最终选择 {len(final_products_to_sync)} 个产品进行 Shopify 同步 (模式: {log_mode_detail}, 目标: {current_target_limit}).")
 
         # --- Dry Run Export Logic ---
         if self.dry_run and final_products_to_sync:
@@ -405,21 +476,26 @@ class SyncOrchestrator:
         logger.warning(f"清理主草稿产品系列中不再同步的旧产品的逻辑需要进一步实现。")
         logger.info(f"--- 品牌 '{brand_name}' 同步结束 ---")
 
-    def run_full_sync(self, keywords_by_brand: Optional[Dict[str, str]] = None):
+    def run_full_sync(self, brands_to_process: List[str], keywords_by_brand: Optional[Dict[str, str]] = None):
         """
         为 BRAND_CONFIG 中定义的所有品牌执行同步。
 
         Args:
+            brands_to_process (List[str]): 要处理的品牌名称列表。
             keywords_by_brand (Optional[Dict[str, str]]): 一个字典，键是品牌名称，值是该品牌的逗号分隔关键词字符串。
                                                        如果未提供或某品牌无关键词，则该品牌不按关键词筛选。
         """
         self.successful_brands_count = 0
         self.failed_brands_info = {}
-        logger.info("\n=== 开始对所有已配置品牌进行全面同步 (统计已重置) ===")
+        logger.info(f"\n=== 开始对指定的 {len(brands_to_process)} 个品牌进行全面同步 (统计已重置) ===") # 更新日志消息
         if keywords_by_brand is None:
             keywords_by_brand = {}
         
-        for brand_name in self.brand_config.keys():
+        if not brands_to_process:
+            logger.info("没有指定要处理的品牌列表，全面同步结束。")
+            return
+
+        for brand_name in brands_to_process:
             brand_keywords_str = keywords_by_brand.get(brand_name)
             # 调用 run_sync_for_brand 之前，我们不知道它是否会失败并提前返回
             # 因此，run_sync_for_brand 内部会处理失败记录

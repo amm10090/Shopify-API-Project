@@ -340,127 +340,116 @@ class ProductRetriever:
             return []
 
         keywords_display = ", ".join(keywords_list) if keywords_list else "无"
-        logger.info(f"正在从 Pepperjam API 获取品牌 '{brand_name}' (Program ID: {program_id}) 的产品，关键词列表: [{keywords_display}], 目标数量: {limit}")
+        logger.info(f"准备从 Pepperjam API 获取品牌 '{brand_name}' (Program ID: {program_id}) 的产品。原始关键词列表: [{keywords_display}], 目标产品数: {limit}")
         
         unified_products: List[UnifiedProduct] = []
-        all_raw_products_data = []
-        seen_product_ids = set() # 用于API级别去重（如果多次调用API）
+        all_raw_products_data_from_multiple_calls = [] # 用于存储所有API调用的原始数据
+        seen_product_identifiers_for_dedup = set() # 用于在所有API调用结果中去重
 
-        # 将关键词列表转换为空格分隔的字符串，用于Pepperjam API调用
-        api_keywords_str = ' '.join(keywords_list) if keywords_list else None
-        
-        logger.info(f"Pepperjam: 将为品牌 '{brand_name}' (Program ID: {program_id}) 使用组合关键词 '{api_keywords_str or '无'}' 进行API请求。")
-        try:
-            # 无论有无关键词，都只调用一次API
-            # Pepperjam API 的 limit 参数似乎有自己的上限，比如50或100。
-            # 为了确保有足够的产品进行后续的客户端AND过滤，我们需要请求比最终limit更多的产品。
-            # Pepperjam API 的 `limit` 通常是每页数量，最大值可能是50或100。
-            # 我们需要获取足够多的产品以进行 AND 筛选。
-            # 假设 Pepperjam API 的 `limit` 是每页数量，且有一个最大值（例如50）。
-            # 如果我们需要的 `limit` 超过API单次调用最大值，或为了有更多筛选空间，
-            # 可能需要分页，但这会增加复杂性。
-            # 目前，我们假设单次调用可以获取足够多的数据进行筛选。
-            # 一个合理的策略是，请求比最终 limit 多几倍的原始数据，例如 limit * 5，但也要尊重API的实际最大限制。
-            # Pepperjam API文档指出limit参数默认为10，最大为50。
+        # API 单次调用时的获取数量
+        api_fetch_limit_per_call = 50 # Pepperjam API 单次调用最大限制
+        if limit > 0 and not keywords_list: # 如果没有关键词，目标是获取 limit 个产品
+            api_fetch_limit_per_call = max(min(limit * 2, 50), 10) # 获取目标数量的2倍，或至少10个，但不超过50
+        elif keywords_list: # 如果有关键词，每个关键词获取 api_fetch_limit_per_call 个
+            # api_fetch_limit_per_call 保持为50，以便为每个关键词获取足够多的候选
+            pass 
+
+        # 确定要进行API调用的关键词组
+        # 如果没有关键词，则进行一次调用，keywords参数为None
+        # 如果有关键词，则为每个关键词单独调用
+        api_call_keywords_groups: List[Optional[str]] = []
+        if not keywords_list:
+            api_call_keywords_groups.append(None) # 一次调用，无关键词
+        else:
+            for kw in keywords_list:
+                api_call_keywords_groups.append(kw) # 每个关键词一次调用
+
+        for api_keywords_str_for_call in api_call_keywords_groups:
+            logger.info(f"Pepperjam: 品牌 '{brand_name}', 正在为关键词 '{api_keywords_str_for_call or '无(获取所有)'}' 进行API请求 (limit: {api_fetch_limit_per_call})...")
+            try:
+                raw_pj_data_single_call = self.pepperjam_client.get_publisher_product_creatives(
+                    program_ids=program_id,
+                    keywords=api_keywords_str_for_call, # 单个关键词字符串或 None
+                    page=1, # 简单起见，只获取第一页
+                    limit=api_fetch_limit_per_call 
+                )
+                if raw_pj_data_single_call and raw_pj_data_single_call.get('meta', {}).get('status', {}).get('code') == 200 and 'data' in raw_pj_data_single_call:
+                    logger.debug(f"Pepperjam: API调用成功 (关键词: '{api_keywords_str_for_call or '无'}')，返回 {len(raw_pj_data_single_call['data'])} 个原始产品。")
+                    for pj_prod_data in raw_pj_data_single_call['data']:
+                        identifier_for_dedup = pj_prod_data.get('id') or pj_prod_data.get('name')
+                        if identifier_for_dedup and identifier_for_dedup not in seen_product_identifiers_for_dedup:
+                            # 为产品标记它是通过哪个关键词获取的 (如果适用)
+                            if api_keywords_str_for_call:
+                                pj_prod_data['_fetched_by_keyword'] = api_keywords_str_for_call
+                            all_raw_products_data_from_multiple_calls.append(pj_prod_data)
+                            seen_product_identifiers_for_dedup.add(identifier_for_dedup)
+                        elif identifier_for_dedup in seen_product_identifiers_for_dedup:
+                            logger.trace(f"Pepperjam: 产品标识符 {identifier_for_dedup} 已在先前API调用结果中见过 (当前关键词: '{api_keywords_str_for_call or '无'}')，跳过重复项。")
+                        else:
+                            logger.warning(f"Pepperjam: 产品缺少 'id' 和 'name' 字段，无法有效去重，跳过。关键词: '{api_keywords_str_for_call or '无'}', 数据片段: {str(pj_prod_data)[:200]}")
+                else:
+                    status_code = raw_pj_data_single_call.get('meta', {}).get('status', {}).get('code') if raw_pj_data_single_call and raw_pj_data_single_call.get('meta') else "N/A"
+                    error_msg = raw_pj_data_single_call.get('meta', {}).get('status', {}).get('message') if raw_pj_data_single_call and raw_pj_data_single_call.get('meta') else "无数据返回或错误"
+                    logger.bind(brand_fetch_error=True).warning(f"Pepperjam API 获取品牌 '{brand_name}' (Program ID: {program_id})，关键词 '{api_keywords_str_for_call or '无'}' 的产品失败或无结果。状态码: {status_code}, 消息: {error_msg}")
             
-            api_fetch_limit = 50 # Pepperjam API 单次调用最大限制
-            if limit * 3 > 50 : # 如果目标数量的3倍大于50，则请求多页，或者先只取50，之后再优化分页
-                 # 简单起见，我们先请求一次，最多50个。如果 limit 本身大于50，这是个问题。
-                 # 对于AND过滤，获取更多候选产品很重要。
-                 # 我们可以在这里设置一个较大的初始获取数量，但要注意API限制。
-                 # 此处暂时简单处理，获取一次，数量为 api_fetch_limit。
-                 pass # 使用默认的 api_fetch_limit = 50
-            elif limit > 0: # 确保 limit 大于0
-                 api_fetch_limit = max(min(limit * 5, 50), 10) # 请求 limit 的5倍，或至少10个，但不超过50
-
-            logger.debug(f"Pepperjam: API 调用将使用 limit={api_fetch_limit} (原始目标 limit={limit})")
-
-            raw_pj_data = self.pepperjam_client.get_publisher_product_creatives(
-                program_ids=program_id,
-                keywords=api_keywords_str, # 使用空格连接的字符串，或None
-                page=1,
-                limit=api_fetch_limit 
-            )
-            if raw_pj_data and raw_pj_data.get('meta', {}).get('status', {}).get('code') == 200 and 'data' in raw_pj_data:
-                logger.debug(f"Pepperjam: API 调用成功，返回 {len(raw_pj_data['data'])} 个原始产品。")
-                for pj_prod_data in raw_pj_data['data']:
-                    # 使用 id 或 name 进行初步去重（以防API在某些情况下返回重复项）
-                    identifier_for_dedup = pj_prod_data.get('id') or pj_prod_data.get('name')
-                    if identifier_for_dedup and identifier_for_dedup not in seen_product_ids:
-                        all_raw_products_data.append(pj_prod_data)
-                        seen_product_ids.add(identifier_for_dedup)
-                    elif identifier_for_dedup in seen_product_ids:
-                        logger.trace(f"Pepperjam: 产品标识符 {identifier_for_dedup} 已在本次API调用结果中见过，跳过。")
-                    else:
-                        logger.warning(f"Pepperjam: 产品缺少 'id' 和 'name' 字段，无法进行有效去重，跳过。产品数据片段: {str(pj_prod_data)[:200]}")
-            else:
-                status_code = raw_pj_data.get('meta', {}).get('status', {}).get('code') if raw_pj_data and raw_pj_data.get('meta') else "N/A"
-                error_msg = raw_pj_data.get('meta', {}).get('status', {}).get('message') if raw_pj_data and raw_pj_data.get('meta') else "No data returned or error"
-                logger.bind(brand_fetch_error=True).warning(f"Pepperjam API 获取品牌 '{brand_name}' (Program ID: {program_id})，关键词 '{api_keywords_str or '无'}' 的产品失败或无结果。状态码: {status_code}, 消息: {error_msg}")
+            except Exception as e_api_call:
+                logger.bind(brand_fetch_error=True).error(f"Pepperjam API 调用 (关键词: '{api_keywords_str_for_call or '无'}') 获取品牌 '{brand_name}' (Program ID: {program_id}) 产品时发生错误: {e_api_call}", exc_info=True)
         
-        except Exception as e_api_call:
-            logger.bind(brand_fetch_error=True).error(f"Pepperjam API 调用获取品牌 '{brand_name}' (Program ID: {program_id}) 产品时发生错误: {e_api_call}", exc_info=True)
-        
-        # 现在处理收集到的 all_raw_products_data
-        total_products_fetched_unique = len(all_raw_products_data)
+        # 现在处理收集到的 all_raw_products_data_from_multiple_calls
+        total_unique_raw_products_fetched = len(all_raw_products_data_from_multiple_calls)
+        logger.info(f"Pepperjam: 品牌 '{brand_name}', 所有关键词API调用共获取到 {total_unique_raw_products_fetched} 个去重后的原始产品。")
+
         count = 0
         skipped_no_data = 0
         skipped_invalid_image = 0
-        skipped_keyword_mismatch_pepperjam = 0 # 定义计数器
+        # skipped_keyword_mismatch_pepperjam 计数器不再适用，因为我们是按单个关键词获取的
         skipped_other_reasons = 0
         processed_raw_products_count = 0
 
-        for pj_prod_data in all_raw_products_data:
+        for pj_prod_data in all_raw_products_data_from_multiple_calls:
             processed_raw_products_count +=1
+            # 即使处理了MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED，如果已满足limit，也应停止
+            if count >= limit:
+                logger.debug(f"Pepperjam: 已达到目标产品数量 {limit}，停止转换。已处理 {processed_raw_products_count-1}/{total_unique_raw_products_fetched} 个原始产品。")
+                break
             if processed_raw_products_count > MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED and count < limit:
-                 logger.warning(f"Pepperjam: For '{brand_name}', scanned {MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED} unique raw products from API but only found {count}/{limit} valid ones after conversion and AND filtering. Stopping conversion.")
+                 logger.warning(f"Pepperjam: 品牌 '{brand_name}', 已扫描 {MAX_RAW_PRODUCTS_TO_SCAN_FROM_FEED} 个原始产品，但仅转换了 {count}/{limit} 个有效产品。停止进一步扫描原始产品。")
                  break
 
             unified_prod = self._pepperjam_product_to_unified(pj_prod_data, brand_name, program_id)
             
             if unified_prod:
-                # 应用客户端AND过滤逻辑
-                if keywords_list:
-                    title_lower = unified_prod.title.lower() if unified_prod.title else ""
-                    desc_lower = unified_prod.description.lower() if unified_prod.description else ""
-                    
-                    all_phrases_matched_in_pepperjam_product = True
-                    for phrase in keywords_list:
-                        phrase_lower = phrase.lower()
-                        if not (phrase_lower in title_lower or phrase_lower in desc_lower):
-                            all_phrases_matched_in_pepperjam_product = False
-                            break
-                    
-                    if not all_phrases_matched_in_pepperjam_product:
-                        skipped_keyword_mismatch_pepperjam += 1 
-                        continue # 跳过此产品，因为它不满足所有关键词短语
+                # 填充 keywords_matched 字段 (如果产品是通过特定关键词获取的)
+                fetched_by_keyword = pj_prod_data.get('_fetched_by_keyword')
+                if fetched_by_keyword:
+                    unified_prod.keywords_matched = [fetched_by_keyword]
                 
-                # 如果通过了AND过滤 (或者没有关键词列表)
-                # UnifiedProduct.keywords_matched 的填充由 SyncOrchestrator 处理。
+                # 注意：此处不再进行客户端AND过滤，因为产品是基于单个关键词获取的
+                # 如果原始 keywords_list 为空 (即获取所有产品)，则也不会有 fetched_by_keyword
+                
                 unified_products.append(unified_prod)
                 count += 1
-                if count >= limit:
-                    break
+                # 此处的 limit 检查已移到循环开始处
             else: # _pepperjam_product_to_unified 返回 None
-                has_image_url = bool(pj_prod_data.get('image_url')) # 重新检查，因为unified_prod为None
+                has_image_url = bool(pj_prod_data.get('image_url'))
                 if not pj_prod_data.get('buy_url') or not pj_prod_data.get('image_url') or not pj_prod_data.get('price'):
                     skipped_no_data += 1
-                elif has_image_url and not self._is_valid_image_url(pj_prod_data.get('image_url')): # 确保 image_url 存在
+                elif has_image_url and not self._is_valid_image_url(pj_prod_data.get('image_url')):
                     skipped_invalid_image += 1
                 else:
                     skipped_other_reasons += 1
         
         logger.info(f"Pepperjam 产品统计 for '{brand_name}' - "
-                   f"API调用获取原始产品数: {total_products_fetched_unique} (基于API关键词: '{api_keywords_str or '无'}'), "
-                   f"扫描转换/过滤的原始产品数: {processed_raw_products_count}, "
-                   f"成功转换并通过AND过滤: {len(unified_products)}, "
-                   f"跳过(客户端AND不匹配): {skipped_keyword_mismatch_pepperjam}, "
+                   f"API调用获取原始产品数 (去重后): {total_unique_raw_products_fetched} (基于关键词列表: '{keywords_display}'), "
+                   f"扫描转换/过滤的原始产品数: {processed_raw_products_count if count < limit else count + skipped_no_data + skipped_invalid_image + skipped_other_reasons}, " # 调整计数器显示逻辑
+                   f"成功转换: {len(unified_products)}, "
+                   # f"跳过(客户端AND不匹配): {skipped_keyword_mismatch_pepperjam}, " # 已移除
                    f"跳过(缺少核心数据): {skipped_no_data}, "
                    f"跳过(图片链接无效): {skipped_invalid_image}, "
                    f"跳过(其他转换原因): {skipped_other_reasons}")
 
-        logger.info(f"为品牌 '{brand_name}' (Pepperjam) 获取并转换了 {len(unified_products)} 个产品。")
-        return unified_products
+        logger.info(f"为品牌 '{brand_name}' (Pepperjam) 获取并转换了 {len(unified_products)} 个产品 (目标: {limit})。")
+        return unified_products[:limit] # 确保最终返回不超过 limit 个产品
 
 # 示例用法:
 if __name__ == '__main__':
