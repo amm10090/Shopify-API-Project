@@ -33,13 +33,14 @@ CJ_API_TOKEN = os.getenv('CJ_API_TOKEN')
 COMPANY_ID = os.getenv('BRAND_CID', '7520009')
 CJ_PID = os.getenv('CJ_PID', '')
 
-def get_products_by_advertiser(advertiser_id, limit=50):
+def get_products_by_advertiser(advertiser_id, limit=50, output_raw_response=False):
     """
     根据广告商ID查询商品
     
     Args:
         advertiser_id (str): 广告商ID
         limit (int): 返回结果数量限制
+        output_raw_response (bool): 是否将原始响应保存到文件
         
     Returns:
         dict: 查询结果
@@ -117,6 +118,17 @@ def get_products_by_advertiser(advertiser_id, limit=50):
         logger.debug('--- API 原始响应文本 ---')
         logger.debug(response_text)
         logger.debug('--- API 原始响应文本结束 ---')
+        
+        # 如果需要，保存原始响应到文件
+        if output_raw_response:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_dir = Path("output") / "raw_responses"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            response_file = output_dir / f"cj_raw_response_{advertiser_id}_{timestamp}.json"
+            
+            with open(response_file, 'w', encoding='utf-8') as f:
+                f.write(response_text)
+            logger.info(f"已保存CJ API原始响应到文件: {response_file}")
         
         # 检查HTTP状态码
         response.raise_for_status()

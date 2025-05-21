@@ -56,7 +56,7 @@ class PepperjamPublisherAPI:
         self.session.mount('http://', HTTPAdapter(max_retries=retries))
         self.session.mount('https://', HTTPAdapter(max_retries=retries))
     
-    def _make_request(self, resource, method="GET", params=None, data=None, verify_ssl=True, max_retries=3):
+    def _make_request(self, resource, method="GET", params=None, data=None, verify_ssl=True, max_retries=3, output_raw_response=False):
         """
         发送API请求
         
@@ -67,6 +67,7 @@ class PepperjamPublisherAPI:
             data (dict): 请求体数据
             verify_ssl (bool): 是否验证SSL证书
             max_retries (int): 最大重试次数
+            output_raw_response (bool): 是否将原始响应保存到文件
             
         Returns:
             dict: API响应
@@ -147,6 +148,19 @@ class PepperjamPublisherAPI:
                 # 检查HTTP状态码
                 response.raise_for_status()
                 
+                # 保存原始响应到文件 (如果需要)
+                if output_raw_response:
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    output_dir = Path("output") / "raw_responses"
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    # 提取资源名称的最后一部分作为文件名
+                    resource_name = resource.split('/')[-1] if '/' in resource else resource
+                    response_file = output_dir / f"pepperjam_api_{resource_name}_{timestamp}.json"
+                    
+                    with open(response_file, 'w', encoding='utf-8') as f:
+                        f.write(response.text)
+                    logger.info(f"已保存Pepperjam API原始响应到文件: {response_file}")
+                
                 # 打印响应内容以便调试
                 logger.debug(f"响应状态码: {response.status_code}")
                 logger.debug(f"响应头: {response.headers}")
@@ -207,7 +221,7 @@ class PepperjamPublisherAPI:
         
     def get_publisher_product_creatives(self, program_ids=None, categories=None, 
                                          keywords=None, refurl=None, page=1, limit=2500,
-                                         sort_by=None, sort_order=None):
+                                         sort_by=None, sort_order=None, output_raw_response=False):
         """
         获取发布者产品创意素材
         
@@ -220,6 +234,7 @@ class PepperjamPublisherAPI:
             limit (int): 每页数量 (API限制最多2500条)
             sort_by (str): 排序字段 (例如: 'popularity', 'price', 'name' 等)
             sort_order (str): 排序顺序 ('asc' 或 'desc')
+            output_raw_response (bool): 是否保存原始API响应到文件
             
         Returns:
             dict: 产品创意素材数据
@@ -248,10 +263,10 @@ class PepperjamPublisherAPI:
             params["sortOrder"] = sort_order
             
         # 添加数量限制参数 (如果API支持)
-        if limit and limit != 2500:
+        if limit:
             params["limit"] = limit
             
-        return self._make_request(resource, params=params)
+        return self._make_request(resource, params=params, output_raw_response=output_raw_response)
     
     def get_categories(self):
         """
@@ -524,7 +539,8 @@ def main():
                 page=args.page,
                 limit=args.limit,
                 sort_by=args.sort_by,
-                sort_order=args.sort_order
+                sort_order=args.sort_order,
+                output_raw_response=True
             )
             if data:
                 filename_parts = ["publisher_products"]

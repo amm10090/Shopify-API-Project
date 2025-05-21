@@ -58,6 +58,21 @@ def main():
         action="store_true",
         help="Run the sync process without making any actual changes to Shopify. Logs intended actions instead."
     )
+    
+    # 添加 fetch-only 参数，仅获取商品而不执行Shopify同步
+    parser.add_argument(
+        "--fetch-only",
+        action="store_true",
+        help="Only fetch products from APIs without any Shopify operations. Products will be exported to output directory."
+    )
+    
+    # 添加商品数量限制参数
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit the number of products to fetch per brand (overrides the default value)."
+    )
+    
     # 添加 verbose/debug 参数 (可选，用于更详细日志)
     parser.add_argument(
         "-v", "--verbose",
@@ -70,6 +85,20 @@ def main():
         "--test",
         action="store_true",
         help="Run in test mode: fetch only 1 product per brand instead of the default 75."
+    )
+    
+    # 添加输出原始API响应参数
+    parser.add_argument(
+        "--output-raw-response",
+        action="store_true",
+        help="保存API原始响应到文件以供分析。响应将保存在output/raw_responses/目录。"
+    )
+    
+    # 添加跳过图片验证参数
+    parser.add_argument(
+        "--skip-image-validation",
+        action="store_true",
+        help="跳过商品图片URL验证步骤，即使图片链接无效也会导入产品。"
     )
 
     args = parser.parse_args()
@@ -89,7 +118,7 @@ def main():
     # 文件 sink
     logs_dir = Path(project_root) / "logs"
     logs_dir.mkdir(exist_ok=True)
-    log_prefix = "dry_run" if args.dry_run else "sync"
+    log_prefix = "fetch_only" if args.fetch_only else ("dry_run" if args.dry_run else "sync")
     # Loguru 会在文件名中的 {time} 处自动插入时间戳
     log_file_path_template = logs_dir / f"{log_prefix}_{{time:YYYYMMDD_HHmmss}}.log" 
     
@@ -107,7 +136,8 @@ def main():
     )
     
     # 记录日志配置信息
-    logger.info(f"启动 Shopify 产品同步程序 ({'DRY RUN 模式' if args.dry_run else '正常模式'})")
+    run_mode = "FETCH ONLY 模式" if args.fetch_only else ("DRY RUN 模式" if args.dry_run else "正常模式")
+    logger.info(f"启动 Shopify 产品同步程序 ({run_mode})")
     logger.info(f"控制台日志级别: {log_level_console}")
     logger.info(f"文件日志将保存到 (模板): {log_file_path_template}") # 记录模板路径
 
@@ -140,10 +170,13 @@ def main():
     # 检查必要的环境变量是否设置
     required_env_vars = [
         'CJ_API_TOKEN', # CJ
-        'ASCEND_API_KEY', # Pepperjam
-        'SHOPIFY_STORE_NAME' # Shopify
-        # Shopify token/password is checked inside ShopifyConnector
+        'ASCEND_API_KEY' # Pepperjam
     ]
+    
+    # 只有在非fetch-only模式下才需要Shopify环境变量
+    if not args.fetch_only:
+        required_env_vars.append('SHOPIFY_STORE_NAME')
+        
     missing_envs = [var for var in required_env_vars if not os.getenv(var)]
     if missing_envs:
         logger.error(f"缺少必要的环境变量: {missing_envs}。请确保 .env 文件已配置。")
@@ -151,8 +184,15 @@ def main():
 
     # 初始化编排器 (传递 dry_run 标志 - Checklist Item 11)
     try:
-        logger.info(f"初始化 SyncOrchestrator... (Dry Run: {args.dry_run}, Test Mode: {args.test})")
-        orchestrator = SyncOrchestrator(dry_run=args.dry_run, test_mode=args.test)
+        logger.info(f"初始化 SyncOrchestrator... (Dry Run: {args.dry_run}, Test Mode: {args.test}, Fetch Only: {args.fetch_only}, Product Limit: {args.limit}, Output Raw Response: {args.output_raw_response}, Skip Image Validation: {args.skip_image_validation})")
+        orchestrator = SyncOrchestrator(
+            dry_run=args.dry_run, 
+            test_mode=args.test, 
+            fetch_only=args.fetch_only, 
+            product_limit=args.limit,
+            output_raw_response=args.output_raw_response,
+            skip_image_validation=args.skip_image_validation
+        )
         logger.debug(f"在 main.py 中创建 orchestrator 后，传递的 test_mode={args.test}, orchestrator.test_mode={orchestrator.test_mode}")
     except Exception as init_e:
         logger.error(f"初始化 SyncOrchestrator 失败: {init_e}", exc_info=True)
@@ -184,6 +224,7 @@ def main():
             if args.brand in available_brands_config: # 然后检查是否符合 API source
                 brands_to_sync.append(args.brand)
                 if args.keywords:
+                    # 传递整个关键词字符串，无需分割
                     keywords_for_sync[args.brand] = args.keywords
                 if args.keywords_json:
                     logger.warning("同时指定了 --brand 和 --keywords-json。将使用 JSON 文件中为该品牌定义的关键词 (如果有)。")
@@ -256,8 +297,14 @@ def main():
     if args.dry_run:
         logger.warning("*** DRY RUN 模式已启用，不会对 Shopify 进行任何实际更改。 ***")
         
+    if args.fetch_only:
+        logger.warning("*** FETCH ONLY 模式已启用，只获取商品并导出，不会进行任何 Shopify 操作。 ***")
+        
     if args.test:
         logger.warning("*** 测试模式已启用，每个品牌只会获取1个产品。 ***")
+
+    if args.skip_image_validation:
+        logger.warning("*** 已禁用商品图片验证，所有产品都将被导入，即使图片链接无效。 ***")
 
     try:
         if len(brands_to_sync) == 1:
@@ -270,7 +317,12 @@ def main():
         logger.error(f"同步过程中发生未捕获的错误: {sync_e}", exc_info=True)
         sys.exit(1)
     
-    logger.info("同步过程执行完毕。")
+    # 根据不同运行模式显示不同的完成消息
+    if args.fetch_only:
+        logger.info("商品获取过程执行完毕。")
+        logger.info(f"获取的商品数据已保存到: output/dry_run_exports/ 目录")
+    else:
+        logger.info("同步过程执行完毕。")
     
     # 在dry run模式下添加日志文件位置提示
     if args.dry_run:

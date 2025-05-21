@@ -42,11 +42,16 @@ class SyncOrchestrator:
     PRODUCTS_PER_BRAND_TARGET = 50 # 每个品牌的目标产品数量
     API_FETCH_LIMIT_MULTIPLIER = 1.5 # 获取API产品时，请求数量的乘数，以便有足够产品筛选
 
-    def __init__(self, dry_run: bool = False, test_mode: bool = False):
+    def __init__(self, dry_run: bool = False, test_mode: bool = False, fetch_only: bool = False, product_limit: Optional[int] = None, output_raw_response: bool = False, skip_image_validation: bool = False):
+        """初始化 SyncOrchestrator。"""
         self.dry_run = dry_run
+        self.fetch_only = fetch_only
         self.test_mode = test_mode
-        logger.info(f"SyncOrchestrator 初始化接收参数: dry_run={dry_run}, test_mode={test_mode}")
-        logger.info(f"SyncOrchestrator 实例属性: self.dry_run={self.dry_run}, self.test_mode={self.test_mode}")
+        self.product_limit = product_limit or (1 if test_mode else 75)
+        self.output_raw_response = output_raw_response
+        self.skip_image_validation = skip_image_validation
+        logger.info(f"SyncOrchestrator 初始化接收参数: dry_run={dry_run}, test_mode={test_mode}, fetch_only={fetch_only}, product_limit={product_limit}, skip_image_validation={skip_image_validation}")
+        logger.info(f"SyncOrchestrator 实例属性: self.dry_run={self.dry_run}, self.test_mode={self.test_mode}, self.fetch_only={self.fetch_only}, self.product_limit={self.product_limit}, self.skip_image_validation={self.skip_image_validation}")
         
         self.successful_brands_count: int = 0
         self.failed_brands_info: Dict[str, str] = {}
@@ -55,8 +60,18 @@ class SyncOrchestrator:
             # self.PRODUCTS_PER_BRAND_TARGET = 1 # 移除或注释掉此行
             logger.info("测试模式已在 SyncOrchestrator 中激活。产品获取数量将根据关键词调整，或默认为1（无关键词时）。")
             
-        self.product_retriever = ProductRetriever()
-        self.shopify_connector = ShopifyConnector(dry_run=self.dry_run, test_mode=self.test_mode) 
+        self.product_retriever = ProductRetriever(skip_image_validation=self.skip_image_validation)
+        
+        # 初始化Shopify连接器
+        if not fetch_only:
+            try:
+                self.shopify_connector = ShopifyConnector()
+            except ImportError:
+                logger.warning("未能导入ShopifyConnector。请确保Shopify模块已安装和配置，如需使用Shopify功能。")
+                self.shopify_connector = None
+        else:
+            self.shopify_connector = None
+            
         self.brand_config = BRAND_CONFIG # 可以考虑从外部文件加载此配置
         # self.logger = logging.getLogger(__name__) # 获取 logger 实例 - Loguru不需要这个
 
@@ -69,38 +84,43 @@ class SyncOrchestrator:
         return f"{brand_slug}-{api_slug}-{safe_source_product_id}"
 
     def _filter_products_by_keywords(self, products: List[UnifiedProduct], user_keywords: List[str]) -> List[UnifiedProduct]:
-        """根据用户提供的关键词列表筛选产品 (AND 逻辑)。"""
+        """根据用户提供的关键词列表筛选产品 (OR 逻辑)。"""
         if not user_keywords:
             return products # 如果没有关键词，返回所有产品
         
         filtered_products: List[UnifiedProduct] = []
         for product in products:
             product.keywords_matched = [] # 清空之前可能存在的匹配
-            all_phrases_matched_for_this_product = True # 先假设产品匹配所有关键词
             
-            temp_matched_phrases = [] # 用于临时存储当前产品匹配的关键词短语
-
+            # 如果产品已经由API关键词搜索获取，直接视为匹配
+            if hasattr(product, 'keywords_matched') and product.keywords_matched:
+                # 产品已经被标记为匹配特定关键词(由API搜索返回)
+                filtered_products.append(product)
+                logger.debug(f"产品 '{product.title}' 已由API关键词搜索获取，自动视为匹配.")
+                continue
+                
+            any_phrase_matched_for_this_product = False # 先假设产品不匹配任何关键词
+            
             for keyword_phrase in user_keywords: # keyword_phrase 是 "Work Boot" 或 "Waterproof"
                 phrase_lower = keyword_phrase.lower()
                 # 检查当前短语是否在标题或描述中
-                if not ((product.title and phrase_lower in product.title.lower()) or \
-                       (product.description and phrase_lower in product.description.lower())):
-                    all_phrases_matched_for_this_product = False # 只要有一个短语不匹配，则此产品不符合AND条件
-                    break # 无需再检查此产品的其他短语
-                else:
-                    # 如果当前短语匹配，则记录下来
-                    if keyword_phrase not in temp_matched_phrases: # 避免重复添加（理论上不应重复，因为user_keywords是列表）
-                         temp_matched_phrases.append(keyword_phrase)
+                if (product.title and phrase_lower in product.title.lower()) or \
+                   (product.description and phrase_lower in product.description.lower()):
+                    any_phrase_matched_for_this_product = True # 只要有一个短语匹配，则此产品符合OR条件
+                    product.keywords_matched.append(keyword_phrase) # 记录匹配的关键词
             
-            if all_phrases_matched_for_this_product:
-                # 如果所有短语都匹配了，将所有实际匹配的短语（来自 temp_matched_phrases）添加到keywords_matched
-                # 或者，更符合原意的是，如果产品通过了所有关键词的AND检查，那么它就匹配了所有user_keywords
-                product.keywords_matched.extend(user_keywords) 
+            if any_phrase_matched_for_this_product:
                 filtered_products.append(product)
+        
+        logger.debug(f"关键词筛选结果: 共 {len(filtered_products)}/{len(products)} 个产品匹配了至少一个关键词")
         return filtered_products
 
     def _save_dry_run_export(self, products: List[UnifiedProduct], brand_name: str):
         """在 dry_run 模式下将获取的产品列表保存到 JSON 文件。"""
+        if not products:
+            logger.warning(f"DRY RUN (JSON): 品牌 '{brand_name}' 没有匹配的产品可导出。")
+            return
+            
         try:
             output_dir = Path("output") / "dry_run_exports"
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -168,7 +188,7 @@ class SyncOrchestrator:
     def _save_markdown_dry_run_export(self, products: List[UnifiedProduct], brand_name: str):
         """Saves the list of products to a Markdown file during a dry run."""
         if not products:
-            logger.info(f"DRY RUN (MD): No products to export for brand '{brand_name}'.")
+            logger.warning(f"DRY RUN (MD): 品牌 '{brand_name}' 没有匹配的产品可导出。")
             return
 
         try:
@@ -206,7 +226,10 @@ class SyncOrchestrator:
 
         Args:
             brand_name (str): 要同步的品牌名称 (必须在 BRAND_CONFIG 中定义)。
-            user_keywords_str (Optional[str]): 用户提供的逗号分隔的关键词字符串 (可选)。
+            user_keywords_str (Optional[str]): 用户提供的关键词字符串，可以是逗号分隔的字符串。
+                这些关键词将根据API类型进行处理：
+                - 对于Pepperjam API，每个关键词短语将单独发送查询
+                - 对于CJ API，关键词将用于本地筛选返回的产品
         """
         logger.info(f"--- 开始为品牌 '{brand_name}' 同步 (关键词: {user_keywords_str or '无'}) ---")
         
@@ -219,7 +242,19 @@ class SyncOrchestrator:
         api_type = config['api_type']
         api_id = config['id']
 
-        user_keywords = [kw.strip() for kw in user_keywords_str.split(',')] if user_keywords_str else []
+        # 处理关键词字符串 - 根据API类型不同处理方式也不同
+        user_keywords = []
+        if user_keywords_str:
+            if api_type == 'cj':
+                # CJ API需要拆分关键词以进行本地筛选
+                user_keywords = [kw.strip() for kw in user_keywords_str.split(',')]
+                logger.debug(f"CJ API: 关键词已拆分为: {user_keywords}")
+            elif api_type == 'pepperjam':
+                # Pepperjam API需要完整关键词短语，以逗号分隔的不同短语
+                user_keywords = [kw.strip() for kw in user_keywords_str.split(',')]
+                logger.debug(f"Pepperjam API: 关键词短语列表为: {user_keywords}")
+        else:
+            logger.debug(f"未提供关键词字符串，继续获取产品而不使用关键词筛选。")
 
         # 1. 从API获取产品数据
         raw_api_products: List[UnifiedProduct] = []
@@ -233,22 +268,31 @@ class SyncOrchestrator:
             for keyword_item in user_keywords:
                 logger.debug(f"测试模式：品牌 '{brand_name}', 为关键词 '{keyword_item}' 获取产品 (limit: {test_fetch_limit_per_keyword})...")
                 current_keyword_products: List[UnifiedProduct] = []
+                if test_fetch_limit_per_keyword < 2: test_fetch_limit_per_keyword = 2 # 至少为2
+                
                 if api_type == 'cj':
-                    current_keyword_products = self.product_retriever.fetch_cj_products(
-                        advertiser_id=api_id, 
-                        brand_name=brand_name, 
-                        keywords_list=[keyword_item],
-                        limit=test_fetch_limit_per_keyword
+                    # 使用CJ API查询特定关键词
+                    logger.debug(f"CJ API: 为关键词 '{keyword_item}' 获取产品")
+                    keyword_specific_products = self.product_retriever.fetch_cj_products(
+                        advertiser_id=api_id,
+                        brand_name=brand_name,
+                        keywords_list=[keyword_item],  # 单个关键词进行AND匹配
+                        limit=test_fetch_limit_per_keyword,
+                        output_raw_response=self.output_raw_response
                     )
                 elif api_type == 'pepperjam':
-                    current_keyword_products = self.product_retriever.fetch_pepperjam_products(
-                        program_id=api_id, 
-                        brand_name=brand_name, 
-                        keywords_list=[keyword_item],
-                        limit=test_fetch_limit_per_keyword
+                    # 使用Pepperjam API查询特定关键词 - 每个关键词单独API调用
+                    logger.debug(f"Pepperjam API: 为关键词短语 '{keyword_item}' 获取产品")
+                    keyword_specific_products = self.product_retriever.fetch_pepperjam_products(
+                        program_id=api_id,
+                        brand_name=brand_name,
+                        keywords_list=[keyword_item],  # 作为单个关键词单独API调用
+                        limit=test_fetch_limit_per_keyword,
+                        process_all=True,  # 处理所有API返回的产品
+                        output_raw_response=self.output_raw_response
                     )
                 
-                for p in current_keyword_products:
+                for p in keyword_specific_products:
                     if p.source_product_id not in processed_product_source_ids:
                         p.keywords_matched = [keyword_item] # 标记产品是由哪个关键词获取的
                         all_test_mode_products.append(p)
@@ -265,18 +309,23 @@ class SyncOrchestrator:
             
             logger.debug(f"品牌 '{brand_name}', API类型 '{api_type}', 完整关键词列表: {user_keywords}, 获取限制: {fetch_limit}")
             if api_type == 'cj':
+                logger.info(f"通过 CJ API 为品牌 '{brand_name}' 获取产品...")
                 raw_api_products = self.product_retriever.fetch_cj_products(
-                    advertiser_id=api_id, 
-                    brand_name=brand_name, 
+                    advertiser_id=api_id,
+                    brand_name=brand_name,
                     keywords_list=user_keywords,
-                    limit=fetch_limit
+                    limit=self.product_limit,
+                    output_raw_response=self.output_raw_response
                 )
             elif api_type == 'pepperjam':
+                logger.info(f"通过 Pepperjam API 为品牌 '{brand_name}' 获取产品...")
                 raw_api_products = self.product_retriever.fetch_pepperjam_products(
-                    program_id=api_id, 
-                    brand_name=brand_name, 
+                    program_id=api_id,
+                    brand_name=brand_name,
                     keywords_list=user_keywords,
-                    limit=fetch_limit
+                    limit=self.product_limit,
+                    process_all=True,  # 处理所有API返回的产品
+                    output_raw_response=self.output_raw_response
                 )
 
         if not raw_api_products:
@@ -335,13 +384,21 @@ class SyncOrchestrator:
         else:
             # 非测试模式，或测试模式但无关键词
             keyword_filtered_products = self._filter_products_by_keywords(available_products, user_keywords)
-            if user_keywords and not self.test_mode : # 仅在非测试模式且有关键词时记录AND过滤结果
-                 logger.info(f"根据组合关键词 '{user_keywords_str}' (AND逻辑) 筛选后剩下 {len(keyword_filtered_products)} 个产品。")
+            if user_keywords and not self.test_mode : # 仅在非测试模式且有关键词时记录OR过滤结果
+                 logger.info(f"根据组合关键词 '{user_keywords_str}' (OR逻辑) 筛选后剩下 {len(keyword_filtered_products)} 个产品。")
             elif not user_keywords:
                  logger.info("未提供关键词，使用所有有货产品进行下一步选择。")
             # 对于测试模式无关键词，上面已处理，这里 keyword_filtered_products 就是 available_products
             
-            current_target_limit = 1 if self.test_mode else self.PRODUCTS_PER_BRAND_TARGET
+            # 根据product_limit参数覆盖默认的PRODUCTS_PER_BRAND_TARGET值
+            if self.test_mode:
+                current_target_limit = 1
+            elif self.product_limit is not None:
+                current_target_limit = self.product_limit
+                logger.info(f"使用用户指定的产品数量限制: {current_target_limit}")
+            else:
+                current_target_limit = self.PRODUCTS_PER_BRAND_TARGET
+                
             final_products_to_sync = keyword_filtered_products[:current_target_limit]
             log_mode_detail = "测试(无关键词)" if self.test_mode else ("正常(有关键词)" if user_keywords else "正常(无关键词)")
             logger.info(f"最终选择 {len(final_products_to_sync)} 个产品进行 Shopify 同步 (模式: {log_mode_detail}, 目标: {current_target_limit}).")
@@ -352,6 +409,34 @@ class SyncOrchestrator:
             self._save_dry_run_export(final_products_to_sync, brand_name) # For JSON
             self._save_markdown_dry_run_export(final_products_to_sync, brand_name) # For Markdown
         # --- End Dry Run Export Logic ---
+        
+        # --- Fetch Only Export Logic ---
+        if self.fetch_only:
+            # 如果是API返回的产品且使用的是API关键词搜索，则无需再筛选
+            products_to_export = []
+            if api_type == 'pepperjam' and user_keywords: 
+                # Pepperjam API已经通过关键词搜索过，直接使用所有原始产品
+                products_to_export = raw_api_products
+                logger.info(f"FETCH ONLY 模式：使用API关键词搜索返回的 {len(products_to_export)} 个产品直接导出，而不进行本地筛选。") 
+            else:
+                # 其他情况(CJ或无关键词)使用经过筛选的产品列表
+                products_to_export = final_products_to_sync
+                
+            if products_to_export:
+                logger.info(f"FETCH ONLY 模式：准备导出 {len(products_to_export)} 个产品到 JSON 和 Markdown...") 
+                self._save_dry_run_export(products_to_export, brand_name) # 复用dry_run的导出功能
+                self._save_markdown_dry_run_export(products_to_export, brand_name)
+            else:
+                logger.warning(f"FETCH ONLY 模式：品牌 '{brand_name}' 没有匹配的产品可导出。")
+            
+            logger.info(f"品牌 '{brand_name}' 的产品获取完成，已导出到输出目录。")
+            return  # fetch_only模式下直接返回，不执行与Shopify相关的操作
+        # --- End Fetch Only Export Logic ---
+
+        # 如果是fetch_only模式，不应该继续执行以下代码
+        if self.fetch_only:
+            logger.warning(f"检测到fetch_only模式但代码仍继续执行，这是不应该的。将跳过品牌 '{brand_name}' 的Shopify操作。")
+            return
 
         # 3. Shopify 主草稿产品系列管理
         master_collection_title = f"{brand_name} - API Products - Draft"
@@ -487,12 +572,16 @@ class SyncOrchestrator:
         """
         self.successful_brands_count = 0
         self.failed_brands_info = {}
-        logger.info(f"\n=== 开始对指定的 {len(brands_to_process)} 个品牌进行全面同步 (统计已重置) ===") # 更新日志消息
+        
+        # 根据运行模式显示不同的初始消息
+        operation_type = "商品获取" if self.fetch_only else "全面同步"
+        logger.info(f"\n=== 开始对指定的 {len(brands_to_process)} 个品牌进行{operation_type} (统计已重置) ===")
+        
         if keywords_by_brand is None:
             keywords_by_brand = {}
         
         if not brands_to_process:
-            logger.info("没有指定要处理的品牌列表，全面同步结束。")
+            logger.info(f"没有指定要处理的品牌列表，{operation_type}结束。")
             return
 
         for brand_name in brands_to_process:
@@ -504,14 +593,18 @@ class SyncOrchestrator:
             # 在 run_sync_for_brand 调用之后，检查它是否将当前品牌标记为失败
             if brand_name not in self.failed_brands_info:
                 self.successful_brands_count += 1
-                logger.info(f"品牌 '{brand_name}' 已成功处理完成。") # 移到此处，以确保仅在未标记为失败时记录
+                operation_verb = "获取" if self.fetch_only else "处理"
+                logger.info(f"品牌 '{brand_name}' 已成功{operation_verb}完成。")
             else:
                 # 失败信息和原因已在 run_sync_for_brand 内部的失败点记录到 self.failed_brands_info
                 # 并且 run_sync_for_brand 在这些点会提前 return，所以这里的日志可能不会显示每个品牌处理后的直接失败原因（如果适用）
                 # 但我们可以在总结中显示它
-                logger.warning(f"品牌 '{brand_name}' 处理标记为失败。详情见总结。")
+                operation_verb = "获取" if self.fetch_only else "处理"
+                logger.warning(f"品牌 '{brand_name}' {operation_verb}标记为失败。详情见总结。")
         
-        logger.info("\n=== 全面同步处理总结 ===")
+        # 根据运行模式显示不同的总结消息
+        summary_prefix = "商品获取" if self.fetch_only else "全面同步"
+        logger.info(f"\n=== {summary_prefix}处理总结 ===")
         logger.info(f"总计成功处理的品牌数量: {self.successful_brands_count}")
         
         failed_brands_count = len(self.failed_brands_info)
@@ -523,7 +616,11 @@ class SyncOrchestrator:
                 logger.info(f"  - 品牌: {brand}")
                 logger.info(f"    原因: {reason}")
             logger.info("--- 失败品牌详情结束 ---")
-        logger.info("=== 全面同步处理总结结束 ===")
+        logger.info(f"=== {summary_prefix}处理总结结束 ===")
+        
+        # 在fetch_only模式下添加提示，告知用户数据已导出
+        if self.fetch_only:
+            logger.info(f"获取的商品数据已保存到 output/dry_run_exports/ 目录")
 
 # 示例用法 (将在 main.py 中调用)
 if __name__ == '__main__':
@@ -547,6 +644,18 @@ if __name__ == '__main__':
     else:
         logger.warning("跳过 'Dreo' 品牌同步测试，因为未在 BRAND_CONFIG 中配置或缺少必要的 CJ/Shopify 凭证。")
 
+    # 测试 fetch_only 模式
+    logger.info("\n--- 测试 fetch_only 模式 ---")
+    fetch_only_orchestrator = SyncOrchestrator(dry_run=False, test_mode=False, fetch_only=True)
+    logger.info("fetch_only_orchestrator 初始化完成。")
+    
+    # 示例：仅获取 Le Creuset 品牌的产品，使用关键词 "Dutch Oven"
+    if 'Le Creuset' in fetch_only_orchestrator.brand_config and os.getenv('ASCEND_API_KEY'):
+        logger.info("\n--- 测试为品牌 'Le Creuset' 获取商品 (Fetch Only) ---")
+        fetch_only_orchestrator.run_sync_for_brand('Le Creuset', user_keywords_str='Dutch Oven')
+    else:
+        logger.warning("跳过 'Le Creuset' 品牌获取测试，因为未在 BRAND_CONFIG 中配置或缺少必要的 Pepperjam 凭证。")
+
     # 示例：同步 Pepperjam 品牌，无关键词 (获取该品牌常规产品)
     if 'PepperjamBrand6200' in orchestrator.brand_config and os.getenv('ASCEND_API_KEY') and os.getenv('SHOPIFY_STORE_NAME'):
         logger.info("\n--- 测试为品牌 'PepperjamBrand6200' 同步 (无关键词, Dry Run) ---")
@@ -555,10 +664,9 @@ if __name__ == '__main__':
         logger.warning("跳过 'PepperjamBrand6200' 品牌同步测试，因为未在 BRAND_CONFIG 中配置或缺少必要的 Pepperjam/Shopify 凭证。")
 
     # # 测试全面同步 (可选，如果配置了多个品牌和关键词)
-    # print("\n--- 测试全面同步 (可选) ---")
-    # logger_main.info("\n--- 测试全面同步 (Dry Run, 可选) ---") # 更新为logger
+    # logger.info("\n--- 测试全面同步 (Dry Run, 可选) ---")
     # keywords_for_all = {
     #     "Dreo": "home, kitchen",
     #     "PepperjamBrand6200": "shoes"
     # }
-    # orchestrator.run_full_sync(keywords_by_brand=keywords_for_all) 
+    # orchestrator.run_full_sync(brands_to_process=list(keywords_for_all.keys()), keywords_by_brand=keywords_for_all) 
