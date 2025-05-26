@@ -1,0 +1,121 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Brand {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  apiType   ApiType
+  apiId     String
+  isActive  Boolean  @default(true)
+  lastSync  DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  products   Product[]
+  importJobs ImportJob[]
+
+  @@map("brands")
+}
+
+model Product {
+  id               String        @id @default(cuid())
+  sourceApi        ApiType
+  sourceProductId  String
+  brandId          String
+  title            String
+  description      String        @db.Text
+  price            Float
+  salePrice        Float?
+  currency         String        @default("USD")
+  imageUrl         String
+  affiliateUrl     String
+  categories       String[]
+  availability     Boolean       @default(true)
+  shopifyProductId String?
+  importStatus     ImportStatus  @default(PENDING)
+  lastUpdated      DateTime      @default(now())
+  keywordsMatched  String[]
+  sku              String?       @unique
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  // Relations
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  // Composite unique constraint
+  @@unique([sourceApi, sourceProductId])
+  @@map("products")
+}
+
+model ImportJob {
+  id              String    @id @default(cuid())
+  brandId         String
+  status          JobStatus @default(RUNNING)
+  productsFound   Int       @default(0)
+  productsImported Int      @default(0)
+  filters         Json?
+  createdAt       DateTime  @default(now())
+  completedAt     DateTime?
+  errorMessage    String?   @db.Text
+
+  // Relations
+  brand Brand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  @@map("import_jobs")
+}
+
+model ShopifySession {
+  id          String   @id @default(cuid())
+  shop        String   @unique
+  accessToken String
+  scope       String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("shopify_sessions")
+}
+
+model SyncLog {
+  id        String   @id @default(cuid())
+  level     LogLevel
+  message   String   @db.Text
+  context   Json?
+  createdAt DateTime @default(now())
+
+  @@map("sync_logs")
+}
+
+enum ApiType {
+  CJ
+  PEPPERJAM
+}
+
+enum ImportStatus {
+  PENDING
+  IMPORTED
+  FAILED
+}
+
+enum JobStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum LogLevel {
+  INFO
+  WARN
+  ERROR
+  DEBUG
+} 

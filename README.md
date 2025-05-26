@@ -1,35 +1,177 @@
-# Shopify API Product Synchronizer
+# Shopify Product Importer
 
-此项目旨在使用 CJ (Commission Junction) 和 Pepperjam (Ascend) 的 API 获取产品数据，并将其同步到 Shopify 店铺。
-主要功能包括：
+现代化的 Shopify 应用，用于从 CJ (Commission Junction) 和 Pepperjam API 导入产品。
 
-*   从 CJ 和 Pepperjam API 根据品牌和关键词获取产品。
-*   将获取的产品同步到 Shopify，包括创建和更新。
-*   为每个品牌维护一个目标数量（例如 50 个）的有货产品在 Shopify 中。
-*   将产品的联盟链接存储在 Shopify 产品的元字段中，以便主题可以用于生成联盟购买链接。
-*   通过命令行界面控制同步过程。
+## 🚀 技术栈
 
-## 设置
+- **前端**: React 19 + TypeScript + Shopify Polaris + Vite
+- **后端**: Node.js + Express + TypeScript + Prisma ORM
+- **数据库**: PostgreSQL
+- **缓存**: Redis
+- **包管理器**: pnpm
 
-1.  **克隆仓库**:
-    ```bash
-    git clone <your-repository-url>
-    cd Shopify-API-Project
-    ```
+## ✨ 主要功能
 
-2.  **创建并激活虚拟环境** (推荐):
-    ```bash
-    python -m venv .venv
-    # Windows
-    .venv\Scripts\activate
-    # macOS/Linux
-    source .venv/bin/activate
-    ```
+- 🔍 从 CJ 和 Pepperjam API 获取产品数据
+- 🎯 智能产品筛选和关键词匹配
+- 📦 手动选择产品导入到 Shopify
+- 🏷️ 品牌管理和配置
+- 💰 价格范围和库存状态过滤
+- 🔄 自动产品信息同步
+- 📊 实时导入状态监控
+- 🎨 现代化的用户界面
 
-3.  **安装依赖**: 
-    ```bash
-    pip install -r requirements.txt
-    ```
+## 🛠️ 快速开始
+
+### 前置要求
+
+- Node.js >= 18.0.0
+- pnpm >= 10.0.0
+- PostgreSQL >= 13
+- Redis >= 6
+
+### 安装步骤
+
+1. **克隆仓库**:
+   ```bash
+   git clone <your-repository-url>
+   cd Shopify-API-Project
+   ```
+
+2. **安装 pnpm** (如果尚未安装):
+   ```bash
+   npm install -g pnpm
+   ```
+
+3. **安装依赖**:
+   ```bash
+   pnpm install
+   ```
+
+4. **环境配置**:
+   ```bash
+   cp .env.example .env
+   # 编辑 .env 文件，填入您的 API 密钥和配置
+   ```
+
+5. **数据库设置**:
+   ```bash
+   # 生成 Prisma 客户端
+   pnpm prisma generate
+   
+   # 运行数据库迁移
+   pnpm prisma db push
+   
+   # (可选) 查看数据库
+   pnpm prisma studio
+   ```
+
+6. **启动开发服务器**:
+   ```bash
+   pnpm dev
+   ```
+
+   应用将在以下地址启动：
+   - 前端: http://localhost:5173
+   - 后端: http://localhost:3000
+
+### 🔧 可用脚本
+
+- `pnpm dev` - 启动开发服务器（前端 + 后端）
+- `pnpm dev:server` - 仅启动后端服务器
+- `pnpm dev:client` - 仅启动前端开发服务器
+- `pnpm build` - 构建生产版本
+- `pnpm start` - 启动生产服务器
+- `pnpm lint` - 运行代码检查
+- `pnpm type-check` - 运行 TypeScript 类型检查
+- `pnpm clean` - 清理构建文件和缓存
+
+## 📋 使用指南
+
+### 1. 配置品牌
+
+1. 进入 "Brands" 页面
+2. 点击 "Add Brand" 添加新品牌
+3. 填写品牌信息：
+   - 品牌名称
+   - API 类型 (CJ 或 Pepperjam)
+   - API ID (CJ 的 Advertiser ID 或 Pepperjam 的 Program ID)
+
+### 2. 导入产品
+
+1. 进入 "Import" 页面
+2. 选择要导入的品牌
+3. (可选) 输入关键词进行筛选
+4. 设置产品数量限制
+5. 点击 "搜索产品"
+6. 选择要导入的产品
+7. 点击 "导入到 Shopify"
+
+### 3. 管理产品
+
+1. 进入 "Products" 页面
+2. 使用筛选器查看不同状态的产品
+3. 批量操作或单个产品管理
+4. 查看导入状态和同步信息
+
+## 🔑 API 配置
+
+### CJ (Commission Junction)
+
+1. 登录 CJ Affiliate 账户
+2. 前往 Account → Web Services
+3. 生成或获取 API Token
+4. 记录您的 Company ID
+
+### Pepperjam
+
+1. 登录 Pepperjam 账户
+2. 前往 Tools → API
+3. 生成 API Key
+
+### Shopify
+
+1. 在 Shopify 管理后台创建私有应用
+2. 启用 Admin API 权限：
+   - Products: Read/Write
+   - Inventory: Read/Write
+3. 复制生成的 Access Token
+
+## 📁 项目结构
+
+```
+├── client/                 # React 前端
+│   ├── components/         # 可复用组件
+│   ├── pages/             # 页面组件
+│   ├── contexts/          # React Context
+│   └── services/          # API 服务
+├── server/                # Node.js 后端
+│   ├── routes/            # API 路由
+│   ├── services/          # 业务逻辑
+│   ├── middleware/        # 中间件
+│   └── utils/             # 工具函数
+├── prisma/                # 数据库模式
+├── shared/                # 共享类型定义
+└── src/                   # Python 脚本 (原有)
+```
+
+## Python 脚本使用（传统方式）
+
+如果您想使用原有的 Python 脚本：
+
+1. **创建并激活虚拟环境**:
+   ```bash
+   python -m venv .venv
+   # Windows
+   .venv\Scripts\activate
+   # macOS/Linux
+   source .venv/bin/activate
+   ```
+
+2. **安装 Python 依赖**:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 4.  **配置环境变量**: 
     *   复制 `.env.example` 文件为 `.env`。
