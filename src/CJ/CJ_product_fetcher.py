@@ -30,7 +30,7 @@ load_dotenv()
 # API配置
 CJ_API_ENDPOINT = os.getenv('CJ_API_ENDPOINT', 'https://ads.api.cj.com/query')
 CJ_API_TOKEN = os.getenv('CJ_API_TOKEN')
-COMPANY_ID = os.getenv('BRAND_CID', '7520009')
+COMPANY_ID = os.getenv('CJ_CID') or os.getenv('BRAND_CID') or '7520009'
 CJ_PID = os.getenv('CJ_PID', '')
 
 def get_products_by_advertiser(advertiser_id, limit=50, output_raw_response=False):

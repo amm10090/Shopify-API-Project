@@ -199,20 +199,55 @@ export class ProductRetriever {
         const unifiedProducts: UnifiedProduct[] = [];
 
         try {
-            const apiUrl = 'https://product-search.api.cj.com/v2/product-search';
-            const response = await axios.get(apiUrl, {
-                headers: {
-                    'Authorization': `Bearer ${process.env.CJ_API_TOKEN}`,
-                    'Content-Type': 'application/json'
-                },
-                params: {
-                    'advertiser-ids': advertiserId,
-                    'records-per-page': Math.max(limit * 5, this.maxRawProductsToScan + 10)
-                }
-            });
+            // 使用正确的CJ GraphQL API端点
+            const apiUrl = 'https://ads.api.cj.com/query';
+            const fetchLimit = Math.max(limit * 5, this.maxRawProductsToScan + 10);
 
-            if (response.data?.products?.length) {
-                const products = response.data.products;
+            // 构建GraphQL查询 - 修复字段查询问题
+            const query = `
+                {
+                    products(companyId: "${process.env.CJ_CID || process.env.BRAND_CID}", partnerIds: ["${advertiserId}"], limit: ${fetchLimit}) {
+                        totalCount
+                        count
+                        resultList {
+                            advertiserId
+                            advertiserName
+                            id
+                            title
+                            description
+                            price {
+                                amount
+                                currency
+                            }
+                            imageLink
+                            link
+                            brand
+                            lastUpdated
+                            ... on Shopping {
+                                availability
+                                productType
+                                googleProductCategory {
+                                    id
+                                    name
+                                }
+                            }
+                        }
+                    }
+                }
+            `;
+
+            const response = await axios.post(apiUrl,
+                { query },
+                {
+                    headers: {
+                        'Authorization': `Bearer ${process.env.CJ_API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    }
+                }
+            );
+
+            if (response.data?.data?.products?.resultList?.length) {
+                const products = response.data.data.products.resultList;
                 let count = 0;
                 let skippedKeywordMismatch = 0;
                 let skippedNoData = 0;
@@ -280,7 +315,8 @@ export class ProductRetriever {
                     `skipped (invalid image): ${skippedInvalidImage}, ` +
                     `skipped (other): ${skippedOtherReasons}`);
             } else {
-                logger.warn(`No products returned from CJ API for advertiser ${advertiserId}`);
+                const errorInfo = response.data?.errors || 'No products returned';
+                logger.warn(`No products returned from CJ API for advertiser ${advertiserId}. Error: ${JSON.stringify(errorInfo)}`);
             }
         } catch (error) {
             logger.error(`Error fetching CJ products for advertiser ${advertiserId}:`, error);

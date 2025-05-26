@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
     Page,
     Layout,
@@ -17,8 +17,12 @@ import {
     Checkbox,
     TextContainer,
     ButtonGroup,
+    Spinner,
+    EmptyState,
 } from '@shopify/polaris';
 import { PlusIcon, EditIcon, DeleteIcon } from '@shopify/polaris-icons';
+import { brandApi } from '../services/api';
+import { Brand } from '@shared/types';
 
 interface BrandsPageProps {
     showToast: (message: string) => void;
@@ -26,11 +30,13 @@ interface BrandsPageProps {
 }
 
 const BrandsPage: React.FC<BrandsPageProps> = ({ showToast, setIsLoading }) => {
+    const [brands, setBrands] = useState<Brand[]>([]);
+    const [loading, setLoading] = useState(true);
     const [selectedBrands, setSelectedBrands] = useState<string[]>([]);
     const [createModalActive, setCreateModalActive] = useState(false);
     const [editModalActive, setEditModalActive] = useState(false);
     const [deleteModalActive, setDeleteModalActive] = useState(false);
-    const [currentBrand, setCurrentBrand] = useState<any>(null);
+    const [currentBrand, setCurrentBrand] = useState<Brand | null>(null);
 
     // 表单状态
     const [brandName, setBrandName] = useState('');
@@ -38,49 +44,28 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ showToast, setIsLoading }) => {
     const [apiId, setApiId] = useState('');
     const [isActive, setIsActive] = useState(true);
 
-    // 模拟品牌数据
-    const brands = [
-        {
-            id: '1',
-            name: 'Dreo',
-            apiType: 'CJ',
-            apiId: '6088764',
-            isActive: true,
-            lastSync: '2024-01-15 10:30',
-            productCount: 125,
-            importedCount: 98,
-        },
-        {
-            id: '2',
-            name: 'Canada Pet Care',
-            apiType: 'CJ',
-            apiId: '4247933',
-            isActive: true,
-            lastSync: '2024-01-14 15:45',
-            productCount: 89,
-            importedCount: 67,
-        },
-        {
-            id: '3',
-            name: 'Le Creuset',
-            apiType: 'PEPPERJAM',
-            apiId: '6200',
-            isActive: false,
-            lastSync: '2024-01-10 09:15',
-            productCount: 45,
-            importedCount: 12,
-        },
-        {
-            id: '4',
-            name: 'BOMBAS',
-            apiType: 'PEPPERJAM',
-            apiId: '8171',
-            isActive: true,
-            lastSync: '2024-01-13 14:20',
-            productCount: 78,
-            importedCount: 56,
-        },
-    ];
+    // 获取品牌列表
+    const fetchBrands = useCallback(async () => {
+        try {
+            setLoading(true);
+            const response = await brandApi.getBrands();
+            if (response.success && response.data) {
+                setBrands(response.data);
+            } else {
+                showToast('Failed to fetch brands');
+            }
+        } catch (error) {
+            console.error('Error fetching brands:', error);
+            showToast('Failed to fetch brands');
+        } finally {
+            setLoading(false);
+        }
+    }, [showToast]);
+
+    // 组件挂载时获取数据
+    useEffect(() => {
+        fetchBrands();
+    }, [fetchBrands]);
 
     const resetForm = () => {
         setBrandName('');
@@ -93,65 +78,108 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ showToast, setIsLoading }) => {
     const handleCreateBrand = useCallback(async () => {
         setIsLoading(true);
         try {
-            // 模拟API调用
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            showToast(`Brand "${brandName}" created successfully`);
-            setCreateModalActive(false);
-            resetForm();
+            const response = await brandApi.createBrand({
+                name: brandName,
+                apiType: apiType as 'cj' | 'pepperjam',
+                apiId,
+                isActive
+            });
+
+            if (response.success) {
+                showToast(`Brand "${brandName}" created successfully`);
+                setCreateModalActive(false);
+                resetForm();
+                fetchBrands(); // 刷新列表
+            } else {
+                showToast(response.error || 'Failed to create brand');
+            }
         } catch (error) {
+            console.error('Error creating brand:', error);
             showToast('Failed to create brand');
         } finally {
             setIsLoading(false);
         }
-    }, [brandName, showToast, setIsLoading]);
+    }, [brandName, apiType, apiId, isActive, showToast, setIsLoading, fetchBrands]);
 
     const handleEditBrand = useCallback(async () => {
+        if (!currentBrand) return;
+
         setIsLoading(true);
         try {
-            // 模拟API调用
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            showToast(`Brand "${brandName}" updated successfully`);
-            setEditModalActive(false);
-            resetForm();
+            const response = await brandApi.updateBrand(currentBrand.id, {
+                name: brandName,
+                apiType: apiType as 'cj' | 'pepperjam',
+                apiId,
+                isActive
+            });
+
+            if (response.success) {
+                showToast(`Brand "${brandName}" updated successfully`);
+                setEditModalActive(false);
+                resetForm();
+                fetchBrands(); // 刷新列表
+            } else {
+                showToast(response.error || 'Failed to update brand');
+            }
         } catch (error) {
+            console.error('Error updating brand:', error);
             showToast('Failed to update brand');
         } finally {
             setIsLoading(false);
         }
-    }, [brandName, showToast, setIsLoading]);
+    }, [currentBrand, brandName, apiType, apiId, isActive, showToast, setIsLoading, fetchBrands]);
 
     const handleDeleteBrands = useCallback(async () => {
         setIsLoading(true);
         try {
-            // 模拟API调用
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            showToast(`Successfully deleted ${selectedBrands.length} brands`);
+            const deletePromises = selectedBrands.map(brandId => brandApi.deleteBrand(brandId));
+            const results = await Promise.allSettled(deletePromises);
+
+            const successCount = results.filter(result =>
+                result.status === 'fulfilled' && result.value.success
+            ).length;
+
+            if (successCount > 0) {
+                showToast(`Successfully deleted ${successCount} brand(s)`);
+                fetchBrands(); // 刷新列表
+            }
+
+            if (successCount < selectedBrands.length) {
+                showToast(`Failed to delete ${selectedBrands.length - successCount} brand(s)`);
+            }
+
             setSelectedBrands([]);
             setDeleteModalActive(false);
         } catch (error) {
+            console.error('Error deleting brands:', error);
             showToast('Failed to delete brands');
         } finally {
             setIsLoading(false);
         }
-    }, [selectedBrands, showToast, setIsLoading]);
+    }, [selectedBrands, showToast, setIsLoading, fetchBrands]);
 
     const handleSyncBrand = useCallback(async (brandId: string, brandName: string) => {
         setIsLoading(true);
         try {
-            // 模拟API调用
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            showToast(`Brand "${brandName}" synced successfully`);
+            const response = await brandApi.updateSyncTime(brandId);
+            if (response.success) {
+                showToast(`Brand "${brandName}" synced successfully`);
+                fetchBrands(); // 刷新列表以显示新的同步时间
+            } else {
+                showToast('Failed to sync brand');
+            }
         } catch (error) {
+            console.error('Error syncing brand:', error);
             showToast('Failed to sync brand');
         } finally {
             setIsLoading(false);
         }
-    }, [showToast, setIsLoading]);
+    }, [showToast, setIsLoading, fetchBrands]);
 
-    const openEditModal = (brand: any) => {
+    const openEditModal = (brand: Brand) => {
         setCurrentBrand(brand);
         setBrandName(brand.name);
-        setApiType(brand.apiType.toLowerCase());
+        setApiType(brand.apiType);
         setApiId(brand.apiId);
         setIsActive(brand.isActive);
         setEditModalActive(true);
@@ -164,10 +192,119 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ showToast, setIsLoading }) => {
     };
 
     const getApiTypeBadge = (apiType: string) => {
-        return apiType === 'CJ' ?
+        return apiType.toUpperCase() === 'CJ' ?
             <Badge tone="info">CJ</Badge> :
             <Badge tone="warning">Pepperjam</Badge>;
     };
+
+    const formatDate = (date: Date | string) => {
+        const d = new Date(date);
+        return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+    };
+
+    if (loading) {
+        return (
+            <Page title="Brand Management">
+                <Layout>
+                    <Layout.Section>
+                        <Card>
+                            <div style={{ padding: '60px', textAlign: 'center' }}>
+                                <Spinner size="large" />
+                                <Text as="p" variant="bodyMd" tone="subdued">
+                                    Loading brands...
+                                </Text>
+                            </div>
+                        </Card>
+                    </Layout.Section>
+                </Layout>
+            </Page>
+        );
+    }
+
+    if (brands.length === 0) {
+        return (
+            <Page
+                title="Brand Management"
+                primaryAction={{
+                    content: 'Add Brand',
+                    primary: true,
+                    icon: PlusIcon,
+                    onAction: () => setCreateModalActive(true),
+                }}
+            >
+                <Layout>
+                    <Layout.Section>
+                        <Card>
+                            <EmptyState
+                                heading="No brands found"
+                                image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+                            >
+                                <p>Get started by adding your first brand to sync products from CJ or Pepperjam APIs.</p>
+                            </EmptyState>
+                        </Card>
+                    </Layout.Section>
+                </Layout>
+                {/* 创建品牌模态框 */}
+                <Modal
+                    open={createModalActive}
+                    onClose={() => {
+                        setCreateModalActive(false);
+                        resetForm();
+                    }}
+                    title="Add New Brand"
+                    primaryAction={{
+                        content: 'Create',
+                        onAction: handleCreateBrand,
+                        disabled: !brandName || !apiId,
+                    }}
+                    secondaryActions={[
+                        {
+                            content: 'Cancel',
+                            onAction: () => {
+                                setCreateModalActive(false);
+                                resetForm();
+                            },
+                        },
+                    ]}
+                >
+                    <Modal.Section>
+                        <Form onSubmit={handleCreateBrand}>
+                            <FormLayout>
+                                <TextField
+                                    label="Brand Name"
+                                    value={brandName}
+                                    onChange={setBrandName}
+                                    placeholder="Enter brand name"
+                                    autoComplete="off"
+                                />
+                                <Select
+                                    label="API Type"
+                                    options={[
+                                        { label: 'CJ (Commission Junction)', value: 'cj' },
+                                        { label: 'Pepperjam', value: 'pepperjam' },
+                                    ]}
+                                    value={apiType}
+                                    onChange={setApiType}
+                                />
+                                <TextField
+                                    label="API ID"
+                                    value={apiId}
+                                    onChange={setApiId}
+                                    placeholder={apiType === 'cj' ? 'Enter Advertiser ID' : 'Enter Program ID'}
+                                    autoComplete="off"
+                                />
+                                <Checkbox
+                                    label="Activate Brand"
+                                    checked={isActive}
+                                    onChange={setIsActive}
+                                />
+                            </FormLayout>
+                        </Form>
+                    </Modal.Section>
+                </Modal>
+            </Page>
+        );
+    }
 
     const rows = brands.map((brand) => [
         <BlockStack gap="100">
@@ -177,10 +314,10 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ showToast, setIsLoading }) => {
         getApiTypeBadge(brand.apiType),
         getStatusBadge(brand.isActive),
         <BlockStack gap="100">
-            <Text as="span" variant="bodyMd">{brand.productCount} products</Text>
-            <Text as="span" variant="bodySm" tone="subdued">{brand.importedCount} imported</Text>
+            <Text as="span" variant="bodyMd">-- products</Text>
+            <Text as="span" variant="bodySm" tone="subdued">-- imported</Text>
         </BlockStack>,
-        brand.lastSync,
+        formatDate(brand.lastSync),
         <ButtonGroup>
             <Button size="slim" onClick={() => openEditModal(brand)}>Edit</Button>
             <Button size="slim" onClick={() => handleSyncBrand(brand.id, brand.name)}>Sync</Button>
@@ -189,14 +326,6 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ showToast, setIsLoading }) => {
     ]);
 
     const bulkActions = [
-        {
-            content: 'Activate Brands',
-            onAction: () => showToast('Batch activation feature under development'),
-        },
-        {
-            content: 'Deactivate Brands',
-            onAction: () => showToast('Batch deactivation feature under development'),
-        },
         {
             content: 'Delete Brands',
             destructive: true,
@@ -236,6 +365,9 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ showToast, setIsLoading }) => {
                                 'Actions',
                             ]}
                             rows={rows}
+                            promotedBulkActions={bulkActions}
+                            selectedItemsCount={selectedBrands.length}
+                            onSelectionChange={setSelectedBrands}
                         />
                     </Card>
                 </Layout.Section>

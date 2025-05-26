@@ -181,4 +181,68 @@ export const shopifyApi = {
     },
 };
 
+// Dashboard相关API
+export const dashboardApi = {
+    // 获取仪表板统计数据
+    getStats: async (): Promise<ApiResponse<any>> => {
+        return api.get('/dashboard/stats');
+    },
+
+    // 获取系统健康状态
+    getHealth: async (): Promise<ApiResponse<any>> => {
+        return api.get('/dashboard/health');
+    },
+
+    // 获取快速统计数据
+    getQuickStats: async (): Promise<ApiResponse<any>> => {
+        return api.get('/dashboard/quick-stats');
+    },
+};
+
+// Settings相关API
+export const settingsApi = {
+    // 获取当前设置
+    getSettings: async (): Promise<ApiResponse<any>> => {
+        return api.get('/settings');
+    },
+
+    // 测试CJ API连接
+    testCjConnection: async (params: {
+        apiToken: string;
+        companyId: string;
+    }): Promise<ApiResponse<any>> => {
+        return api.post('/settings/test/cj', params);
+    },
+
+    // 测试Pepperjam API连接
+    testPepperjamConnection: async (params: {
+        apiKey: string;
+    }): Promise<ApiResponse<any>> => {
+        return api.post('/settings/test/pepperjam', params);
+    },
+
+    // 测试Shopify连接
+    testShopifyConnection: async (params: {
+        storeUrl: string;
+        accessToken: string;
+    }): Promise<ApiResponse<any>> => {
+        return api.post('/settings/test/shopify', params);
+    },
+
+    // 获取系统状态
+    getStatus: async (): Promise<ApiResponse<any>> => {
+        return api.get('/settings/status');
+    },
+
+    // 获取系统信息
+    getInfo: async (): Promise<ApiResponse<any>> => {
+        return api.get('/settings/info');
+    },
+
+    // 保存设置
+    saveSettings: async (settings: any): Promise<ApiResponse<any>> => {
+        return api.post('/settings', settings);
+    },
+};
+
 export default api; 

@@ -32,7 +32,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
         }
 
         if (req.query.importStatus) {
-            where.importStatus = req.query.importStatus;
+            where.importStatus = (req.query.importStatus as string).toUpperCase();
         }
 
         if (req.query.search) {

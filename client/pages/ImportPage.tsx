@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
     Page,
     Layout,
@@ -18,8 +18,11 @@ import {
     Checkbox,
     Banner,
     Spinner,
+    EmptyState,
 } from '@shopify/polaris';
 import { SearchIcon, ImportIcon } from '@shopify/polaris-icons';
+import { brandApi, importApi } from '../services/api';
+import { Brand, UnifiedProduct, ImportJob } from '@shared/types';
 
 interface ImportPageProps {
     showToast: (message: string) => void;
@@ -27,54 +30,89 @@ interface ImportPageProps {
 }
 
 const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
+    // 基础状态
+    const [brands, setBrands] = useState<Brand[]>([]);
+    const [loadingBrands, setLoadingBrands] = useState(true);
     const [selectedBrand, setSelectedBrand] = useState('');
     const [keywords, setKeywords] = useState('');
     const [productLimit, setProductLimit] = useState('50');
+
+    // 搜索和导入状态
     const [isSearching, setIsSearching] = useState(false);
-    const [searchResults, setSearchResults] = useState<any[]>([]);
+    const [searchResults, setSearchResults] = useState<UnifiedProduct[]>([]);
     const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
     const [importProgress, setImportProgress] = useState(0);
     const [isImporting, setIsImporting] = useState(false);
 
-    // 模拟品牌选项
-    const brandOptions = [
-        { label: 'Choose Brand', value: '' },
-        { label: 'Dreo (CJ)', value: 'dreo' },
-        { label: 'Canada Pet Care (CJ)', value: 'canada-pet-care' },
-        { label: 'Le Creuset (Pepperjam)', value: 'le-creuset' },
-        { label: 'BOMBAS (Pepperjam)', value: 'bombas' },
-    ];
+    // 导入历史
+    const [importHistory, setImportHistory] = useState<ImportJob[]>([]);
+    const [loadingHistory, setLoadingHistory] = useState(false);
 
-    // 模拟搜索结果
-    const mockSearchResults = [
-        {
-            id: '1',
-            title: 'Dreo Air Fryer 6.8L',
-            price: '$129.99',
-            imageUrl: 'https://via.placeholder.com/60',
-            availability: true,
-            categories: ['Kitchen', 'Appliances'],
-            description: 'Air Fryer, 6.8L, suitable for home use...',
-        },
-        {
-            id: '2',
-            title: 'Dreo Smart Tower Fan',
-            price: '$89.99',
-            imageUrl: 'https://via.placeholder.com/60',
-            availability: true,
-            categories: ['Home', 'Fans'],
-            description: 'Smart Tower Fan, quiet design, remote control...',
-        },
-        {
-            id: '3',
-            title: 'Dreo Humidifier',
-            price: '$59.99',
-            imageUrl: 'https://via.placeholder.com/60',
-            availability: false,
-            categories: ['Home', 'Health'],
-            description: 'Ultrasonic humidifier, large capacity water tank...',
-        },
-    ];
+    // 获取品牌列表
+    const fetchBrands = useCallback(async () => {
+        try {
+            setLoadingBrands(true);
+            const response = await brandApi.getBrands();
+            if (response.success && response.data) {
+                setBrands(response.data.filter(brand => brand.isActive));
+            } else {
+                showToast('Failed to load brands');
+            }
+        } catch (error) {
+            console.error('Error fetching brands:', error);
+            showToast('Failed to load brands');
+        } finally {
+            setLoadingBrands(false);
+        }
+    }, [showToast]);
+
+    // 获取导入历史
+    const fetchImportHistory = useCallback(async () => {
+        try {
+            setLoadingHistory(true);
+            const response = await importApi.getImportHistory({ limit: 5 });
+            if (response.data) {
+                setImportHistory(response.data);
+            }
+        } catch (error) {
+            console.error('Error fetching import history:', error);
+        } finally {
+            setLoadingHistory(false);
+        }
+    }, []);
+
+    // 组件挂载时获取数据
+    useEffect(() => {
+        fetchBrands();
+        fetchImportHistory();
+
+        // 设置定时器，每30秒刷新导入历史
+        const interval = setInterval(() => {
+            fetchImportHistory();
+        }, 30000);
+
+        return () => clearInterval(interval);
+    }, [fetchBrands, fetchImportHistory]);
+
+    // 处理产品选择
+    const handleProductSelection = useCallback((productId: string, selected: boolean) => {
+        setSelectedProducts(prev => {
+            if (selected) {
+                return [...prev, productId];
+            } else {
+                return prev.filter(id => id !== productId);
+            }
+        });
+    }, []);
+
+    // 全选/取消全选
+    const handleSelectAll = useCallback((selected: boolean) => {
+        if (selected) {
+            setSelectedProducts(searchResults.map(product => product.id));
+        } else {
+            setSelectedProducts([]);
+        }
+    }, [searchResults]);
 
     const handleSearch = useCallback(async () => {
         if (!selectedBrand) {
@@ -83,33 +121,27 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
         }
 
         setIsSearching(true);
+        setSearchResults([]);
+        setSelectedProducts([]);
+
         try {
             // 启动导入任务
-            const response = await fetch('/api/import/start', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    brandId: selectedBrand,
-                    keywords: keywords.trim() || undefined,
-                    limit: parseInt(productLimit)
-                })
+            const response = await importApi.startImport({
+                brandId: selectedBrand,
+                keywords: keywords.trim() || undefined,
+                limit: parseInt(productLimit)
             });
 
-            const result = await response.json();
-
-            if (result.success) {
+            if (response.success && response.data) {
                 showToast('Import job started, fetching products...');
 
                 // 轮询检查任务状态
                 const checkStatus = async () => {
                     try {
-                        const statusResponse = await fetch(`/api/import/${result.data.id}/status`);
-                        const statusResult = await statusResponse.json();
+                        const statusResponse = await importApi.getImportStatus(response.data!.id);
 
-                        if (statusResult.success) {
-                            const job = statusResult.data;
+                        if (statusResponse.success && statusResponse.data) {
+                            const job = statusResponse.data;
 
                             if (job.status === 'completed') {
                                 // 获取产品列表
@@ -121,9 +153,11 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                                     showToast(`Found ${productsResult.data.length} products`);
                                 }
                                 setIsSearching(false);
+                                fetchImportHistory(); // 刷新导入历史
                             } else if (job.status === 'failed') {
                                 showToast(`Import failed: ${job.errorMessage || 'Unknown error'}`);
                                 setIsSearching(false);
+                                fetchImportHistory(); // 刷新导入历史
                             } else {
                                 // 继续轮询
                                 setTimeout(checkStatus, 2000);
@@ -138,14 +172,14 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                 // 开始状态检查
                 setTimeout(checkStatus, 2000);
             } else {
-                showToast(result.error || 'Failed to start import');
+                showToast(response.error || 'Failed to start import');
                 setIsSearching(false);
             }
         } catch (error) {
             showToast('Search failed');
             setIsSearching(false);
         }
-    }, [selectedBrand, keywords, productLimit, showToast]);
+    }, [selectedBrand, keywords, productLimit, showToast, fetchImportHistory]);
 
     const handleImport = useCallback(async () => {
         if (selectedProducts.length === 0) {
@@ -157,6 +191,17 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
         setImportProgress(0);
 
         try {
+            // 模拟进度更新
+            const progressInterval = setInterval(() => {
+                setImportProgress(prev => {
+                    if (prev >= 90) {
+                        clearInterval(progressInterval);
+                        return prev;
+                    }
+                    return prev + 10;
+                });
+            }, 500);
+
             // 调用Shopify导入API
             const response = await fetch('/api/shopify/import', {
                 method: 'POST',
@@ -169,6 +214,8 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
             });
 
             const result = await response.json();
+            clearInterval(progressInterval);
+            setImportProgress(100);
 
             if (result.success) {
                 const { success, failed, errors } = result.data;
@@ -209,18 +256,97 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
             <Badge tone="critical">Out of Stock</Badge>;
     };
 
+    const getStatusBadge = (status: string) => {
+        switch (status) {
+            case 'completed':
+                return <Badge tone="success">Success</Badge>;
+            case 'failed':
+                return <Badge tone="critical">Failed</Badge>;
+            case 'running':
+                return <Badge tone="attention">Running</Badge>;
+            default:
+                return <Badge>Unknown</Badge>;
+        }
+    };
+
+    const formatPrice = (price: number, currency: string = 'USD') => {
+        if (currency === 'USD') {
+            return `$${price.toFixed(2)}`;
+        }
+        return `${price.toFixed(2)} ${currency}`;
+    };
+
+    const formatDate = (date: Date | string) => {
+        const d = new Date(date);
+        const now = new Date();
+        const diffInHours = Math.floor((now.getTime() - d.getTime()) / (1000 * 60 * 60));
+
+        if (diffInHours < 1) {
+            return 'Just now';
+        } else if (diffInHours < 24) {
+            return `${diffInHours} hour${diffInHours > 1 ? 's' : ''} ago`;
+        } else {
+            const diffInDays = Math.floor(diffInHours / 24);
+            return `${diffInDays} day${diffInDays > 1 ? 's' : ''} ago`;
+        }
+    };
+
+    // 生成品牌选项
+    const brandOptions = [
+        { label: 'Choose Brand', value: '' },
+        ...brands.map(brand => ({
+            label: `${brand.name} (${brand.apiType.toUpperCase()})`,
+            value: brand.id
+        }))
+    ];
+
+    // 生成搜索结果表格行
     const searchResultRows = searchResults.map((product) => [
         <InlineStack gap="300" align="center">
-            <Thumbnail source={product.imageUrl} alt={product.title} size="small" />
+            <Checkbox
+                label=""
+                labelHidden
+                checked={selectedProducts.includes(product.id)}
+                onChange={(checked) => handleProductSelection(product.id, checked)}
+            />
+            <Thumbnail
+                source={product.imageUrl || 'https://via.placeholder.com/60'}
+                alt={product.title}
+                size="small"
+            />
             <BlockStack gap="100">
                 <Text as="span" variant="bodyMd" fontWeight="semibold">{product.title}</Text>
-                <Text as="span" variant="bodySm" tone="subdued">{product.description.substring(0, 50)}...</Text>
+                <Text as="span" variant="bodySm" tone="subdued">
+                    {product.description ? product.description.substring(0, 50) + '...' : 'No description'}
+                </Text>
+                {product.sku && (
+                    <Text as="span" variant="bodySm" tone="subdued">SKU: {product.sku}</Text>
+                )}
             </BlockStack>
         </InlineStack>,
-        product.price,
+        formatPrice(product.price, product.currency),
         getAvailabilityBadge(product.availability),
-        product.categories.join(', '),
+        product.categories.length > 0 ? product.categories.slice(0, 2).join(', ') : 'No categories',
     ]);
+
+    if (loadingBrands) {
+        return (
+            <Page title="Product Import" subtitle="Import products from CJ and Pepperjam APIs">
+                <Layout>
+                    <Layout.Section>
+                        <Card>
+                            <div style={{ padding: '60px', textAlign: 'center' }}>
+                                <Spinner size="large" />
+                                <Text as="p" variant="bodyMd" tone="subdued">
+                                    Loading brands...
+                                </Text>
+                            </div>
+                        </Card>
+                    </Layout.Section>
+                </Layout>
+            </Page>
+        );
+    }
 
     return (
         <Page title="Product Import" subtitle="Import products from CJ and Pepperjam APIs">
@@ -230,6 +356,13 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                     <Card>
                         <BlockStack gap="400">
                             <Text as="h2" variant="headingMd">Search Products</Text>
+
+                            {brands.length === 0 && (
+                                <Banner tone="warning">
+                                    <p>No active brands found. Please add and activate brands in the Brand Management page first.</p>
+                                </Banner>
+                            )}
+
                             <Form onSubmit={handleSearch}>
                                 <FormLayout>
                                     <FormLayout.Group>
@@ -238,6 +371,7 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                                             options={brandOptions}
                                             value={selectedBrand}
                                             onChange={setSelectedBrand}
+                                            disabled={brands.length === 0}
                                         />
                                         <TextField
                                             label="Keywords"
@@ -264,10 +398,10 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                                                 variant="primary"
                                                 icon={SearchIcon}
                                                 loading={isSearching}
-                                                disabled={!selectedBrand}
+                                                disabled={!selectedBrand || brands.length === 0}
                                                 submit
                                             >
-                                                搜索产品
+                                                Search Products
                                             </Button>
                                         </div>
                                     </FormLayout.Group>
@@ -284,15 +418,33 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                             <BlockStack gap="400">
                                 <InlineStack align="space-between">
                                     <Text as="h2" variant="headingMd">Search Results ({searchResults.length} products)</Text>
-                                    <Button
-                                        variant="primary"
-                                        icon={ImportIcon}
-                                        onClick={handleImport}
-                                        disabled={selectedProducts.length === 0 || isImporting}
-                                        loading={isImporting}
-                                    >
-                                        Import Selected Products ({selectedProducts.length.toString()})
-                                    </Button>
+                                    <InlineStack gap="200">
+                                        <Button
+                                            variant="plain"
+                                            onClick={() => handleSelectAll(selectedProducts.length !== searchResults.length)}
+                                        >
+                                            {selectedProducts.length === searchResults.length ? 'Deselect All' : 'Select All'}
+                                        </Button>
+                                        <Button
+                                            variant="secondary"
+                                            onClick={() => {
+                                                setSearchResults([]);
+                                                setSelectedProducts([]);
+                                                showToast('Search results cleared');
+                                            }}
+                                        >
+                                            Clear Results
+                                        </Button>
+                                        <Button
+                                            variant="primary"
+                                            icon={ImportIcon}
+                                            onClick={handleImport}
+                                            disabled={selectedProducts.length === 0 || isImporting}
+                                            loading={isImporting}
+                                        >
+                                            Import Selected ({selectedProducts.length.toString()})
+                                        </Button>
+                                    </InlineStack>
                                 </InlineStack>
 
                                 {isImporting && (
@@ -315,34 +467,49 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                     </Layout.Section>
                 )}
 
+                {/* 空状态 */}
+                {!isSearching && searchResults.length === 0 && selectedBrand && (
+                    <Layout.Section>
+                        <Card>
+                            <EmptyState
+                                heading="No products found"
+                                image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+                            >
+                                <p>No products were found for the selected brand and keywords. Try adjusting your search criteria.</p>
+                            </EmptyState>
+                        </Card>
+                    </Layout.Section>
+                )}
+
                 {/* 导入说明 */}
                 <Layout.Section>
                     <Card>
                         <BlockStack gap="400">
                             <Text as="h2" variant="headingMd">Import Instructions</Text>
                             <Banner tone="info">
-                                <p>Products will be imported as drafts to Shopify, you can view and manage them in the product management page.</p>
+                                <p>Products will be imported as drafts to Shopify. You can view and manage them in the Product Management page.</p>
                             </Banner>
 
                             <BlockStack gap="200">
                                 <Text as="h3" variant="headingMd">Steps:</Text>
                                 <ol style={{ paddingLeft: '20px' }}>
-                                    <li>Select the brand to search</li>
-                                    <li>Enter keywords (optional)</li>
-                                    <li>Set product limit</li>
-                                    <li>Click search products</li>
-                                    <li>Select products to import</li>
-                                    <li>Click import button</li>
+                                    <li>Select a brand from the dropdown</li>
+                                    <li>Enter keywords (optional) to filter products</li>
+                                    <li>Set the maximum number of products to fetch</li>
+                                    <li>Click "Search Products" to fetch from the API</li>
+                                    <li>Select the products you want to import</li>
+                                    <li>Click "Import Selected" to import to Shopify</li>
                                 </ol>
                             </BlockStack>
 
                             <BlockStack gap="200">
                                 <Text as="h3" variant="headingMd">Notes:</Text>
                                 <ul style={{ paddingLeft: '20px' }}>
-                                    <li>Products will be imported as drafts</li>
-                                    <li>Product images will be automatically validated</li>
-                                    <li>Affiliate links will be saved in product metafields</li>
-                                    <li>Duplicate products will be automatically updated instead of duplicated</li>
+                                    <li>Products are imported as drafts and added to brand-specific collections</li>
+                                    <li>Product images are automatically validated (unless disabled in settings)</li>
+                                    <li>Affiliate links are saved in product metafields</li>
+                                    <li>Duplicate products are automatically updated instead of creating duplicates</li>
+                                    <li>You can manage imported products in the Product Management page</li>
                                 </ul>
                             </BlockStack>
                         </BlockStack>
@@ -353,34 +520,42 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                 <Layout.Section>
                     <Card>
                         <BlockStack gap="400">
-                            <Text as="h2" variant="headingMd">Recent Imports</Text>
-                            <BlockStack gap="400">
-                                <InlineStack align="space-between">
-                                    <InlineStack gap="300" align="center">
-                                        <Text as="span" variant="bodyMd">Dreo - 25 products</Text>
-                                        <Badge tone="success">Success</Badge>
-                                    </InlineStack>
-                                    <Text as="span" variant="bodySm" tone="subdued">2 hours ago</Text>
-                                </InlineStack>
+                            <InlineStack align="space-between">
+                                <Text as="h2" variant="headingMd">Recent Import History</Text>
+                                <Button variant="plain" onClick={fetchImportHistory} loading={loadingHistory}>
+                                    Refresh
+                                </Button>
+                            </InlineStack>
 
-                                <InlineStack align="space-between">
-                                    <InlineStack gap="300" align="center">
-                                        <Text as="span" variant="bodyMd">Canada Pet Care - 15 products</Text>
-                                        <Badge tone="success">Success</Badge>
-                                    </InlineStack>
-                                    <Text as="span" variant="bodySm" tone="subdued">1 day ago</Text>
-                                </InlineStack>
-
-                                <InlineStack align="space-between">
-                                    <InlineStack gap="300" align="center">
-                                        <Text as="span" variant="bodyMd">Le Creuset - 8 products</Text>
-                                        <Badge tone="critical">Failed</Badge>
-                                    </InlineStack>
-                                    <Text as="span" variant="bodySm" tone="subdued">2 days ago</Text>
-                                </InlineStack>
-
-                                <Button variant="plain" size="large">View Full History</Button>
-                            </BlockStack>
+                            {loadingHistory ? (
+                                <div style={{ textAlign: 'center', padding: '20px' }}>
+                                    <Spinner size="small" />
+                                </div>
+                            ) : importHistory.length > 0 ? (
+                                <BlockStack gap="300">
+                                    {importHistory.map((job) => {
+                                        const brand = brands.find(b => b.id === job.brandId);
+                                        return (
+                                            <InlineStack key={job.id} align="space-between">
+                                                <InlineStack gap="300" align="center">
+                                                    <Text as="span" variant="bodyMd">
+                                                        {brand?.name || 'Unknown Brand'} - {job.productsImported || job.productsFound || 0} products
+                                                    </Text>
+                                                    {getStatusBadge(job.status)}
+                                                </InlineStack>
+                                                <Text as="span" variant="bodySm" tone="subdued">
+                                                    {formatDate(job.createdAt)}
+                                                </Text>
+                                            </InlineStack>
+                                        );
+                                    })}
+                                    <Button variant="plain" size="large">View Full History</Button>
+                                </BlockStack>
+                            ) : (
+                                <Text as="p" variant="bodyMd" tone="subdued">
+                                    No import history found. Start by searching and importing products.
+                                </Text>
+                            )}
                         </BlockStack>
                     </Card>
                 </Layout.Section>

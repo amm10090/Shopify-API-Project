@@ -71,12 +71,6 @@ function App() {
                         selected: currentPage === 'settings',
                         onClick: () => setCurrentPage('settings'),
                     },
-                    {
-                        label: 'Context Test',
-                        icon: SettingsIcon,
-                        selected: currentPage === 'context-test',
-                        onClick: () => setCurrentPage('context-test'),
-                    },
                 ]}
             />
         </Navigation>
@@ -92,7 +86,7 @@ function App() {
     const renderCurrentPage = () => {
         switch (currentPage) {
             case 'dashboard':
-                return <DashboardPage />
+                return <DashboardPage showToast={showToast} setIsLoading={setLoading} />
             case 'products':
                 return <ProductsPage showToast={showToast} setIsLoading={setLoading} />
             case 'brands':
@@ -101,8 +95,7 @@ function App() {
                 return <ImportPage showToast={showToast} setIsLoading={setLoading} />
             case 'settings':
                 return <SettingsPage showToast={showToast} />
-            default:
-                return <DashboardPage />
+
         }
     }
 

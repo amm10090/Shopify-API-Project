@@ -10,6 +10,8 @@ import productRoutes from './routes/products';
 import brandRoutes from './routes/brands';
 import importRoutes from './routes/import';
 import shopifyRoutes from './routes/shopify';
+import dashboardRoutes from './routes/dashboard';
+import settingsRoutes from './routes/settings';
 
 // 导入中间件
 import { errorHandler } from './middleware/errorHandler';
@@ -59,6 +61,8 @@ app.use('/api/products', productRoutes);
 app.use('/api/brands', brandRoutes);
 app.use('/api/import', importRoutes);
 app.use('/api/shopify', shopifyRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // 错误处理中间件
 app.use(errorHandler);

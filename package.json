@@ -16,7 +16,8 @@
         "type-check": "tsc --noEmit",
         "test": "jest",
         "clean": "rimraf dist node_modules/.cache",
-        "postinstall": "prisma generate"
+        "postinstall": "prisma generate",
+        "db:seed": "tsx prisma/seed.ts"
     },
     "dependencies": {
         "@prisma/client": "^6.8.2",
@@ -57,6 +58,7 @@
         "rimraf": "^6.0.1",
         "ts-node": "^10.9.1",
         "tsconfig-paths": "^4.2.0",
+        "tsx": "^4.19.4",
         "typescript": "^5.3.3",
         "vite": "^6.3.5"
     },

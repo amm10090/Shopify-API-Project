@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
     Page,
     Layout,
@@ -11,60 +11,170 @@ import {
     Button,
     Icon,
     Grid,
+    Spinner,
+    Banner,
 } from '@shopify/polaris';
 import {
     ProductIcon,
     CollectionIcon,
     ImportIcon,
     CheckCircleIcon,
+    RefreshIcon,
 } from '@shopify/polaris-icons';
+import { dashboardApi } from '../services/api';
 
-interface DashboardPageProps { }
+interface DashboardPageProps {
+    showToast?: (message: string) => void;
+    setIsLoading?: (loading: boolean) => void;
+}
 
-const DashboardPage: React.FC<DashboardPageProps> = () => {
-    // 模拟数据，实际应该从API获取
-    const stats = {
-        totalProducts: 1250,
-        importedProducts: 980,
-        pendingProducts: 200,
-        failedProducts: 70,
-        activeBrands: 8,
-        totalBrands: 12,
-        recentImports: 5,
-    };
+interface DashboardStats {
+    totalProducts: number;
+    importedProducts: number;
+    pendingProducts: number;
+    failedProducts: number;
+    totalBrands: number;
+    activeBrands: number;
+    recentImports: number;
+    importProgress: number;
+}
 
-    const importProgress = (stats.importedProducts / stats.totalProducts) * 100;
+interface RecentActivity {
+    id: string;
+    action: string;
+    brand: string;
+    count: number;
+    status: string;
+    time: string;
+}
 
-    const recentActivity = [
-        {
-            id: '1',
-            action: 'Imported Products',
-            brand: 'Dreo',
-            count: 25,
-            status: 'success',
-            time: '2 hours ago',
-        },
-        {
-            id: '2',
-            action: 'Sync Failed',
-            brand: 'Canada Pet Care',
-            count: 3,
-            status: 'error',
-            time: '4 hours ago',
-        },
-        {
-            id: '3',
-            action: 'Brand Activated',
-            brand: 'Le Creuset',
-            count: 1,
-            status: 'info',
-            time: '6 hours ago',
-        },
-    ];
+interface TopBrand {
+    brandId: string;
+    brandName: string;
+    productCount: number;
+}
+
+const DashboardPage: React.FC<DashboardPageProps> = ({ showToast, setIsLoading }) => {
+    const [stats, setStats] = useState<DashboardStats | null>(null);
+    const [recentActivity, setRecentActivity] = useState<RecentActivity[]>([]);
+    const [topBrands, setTopBrands] = useState<TopBrand[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [lastUpdated, setLastUpdated] = useState<string>('');
+    const [error, setError] = useState<string>('');
+
+    // 获取仪表板数据
+    const fetchDashboardData = useCallback(async () => {
+        try {
+            setLoading(true);
+            setError('');
+
+            const response = await dashboardApi.getStats();
+
+            if (response.success && response.data) {
+                setStats(response.data.stats);
+                setRecentActivity(response.data.recentActivity || []);
+                setTopBrands(response.data.topBrands || []);
+                setLastUpdated(response.data.lastUpdated);
+            } else {
+                setError('Failed to load dashboard data');
+                showToast?.('Failed to load dashboard data');
+            }
+        } catch (error) {
+            console.error('Error fetching dashboard data:', error);
+            setError('Error loading dashboard data');
+            showToast?.('Error loading dashboard data');
+        } finally {
+            setLoading(false);
+        }
+    }, [showToast]);
+
+    // 组件挂载时获取数据
+    useEffect(() => {
+        fetchDashboardData();
+    }, [fetchDashboardData]);
+
+    // 手动刷新数据
+    const handleRefresh = useCallback(async () => {
+        setIsLoading?.(true);
+        await fetchDashboardData();
+        setIsLoading?.(false);
+        showToast?.('Dashboard data refreshed');
+    }, [fetchDashboardData, setIsLoading, showToast]);
+
+    // 如果正在加载且没有数据，显示加载状态
+    if (loading && !stats) {
+        return (
+            <Page title="Dashboard" subtitle="Product Import System Overview">
+                <Layout>
+                    <Layout.Section>
+                        <Card>
+                            <div style={{ padding: '60px', textAlign: 'center' }}>
+                                <Spinner size="large" />
+                                <Text as="p" variant="bodyMd" tone="subdued">
+                                    Loading dashboard data...
+                                </Text>
+                            </div>
+                        </Card>
+                    </Layout.Section>
+                </Layout>
+            </Page>
+        );
+    }
+
+    // 如果有错误且没有数据，显示错误状态
+    if (error && !stats) {
+        return (
+            <Page title="Dashboard" subtitle="Product Import System Overview">
+                <Layout>
+                    <Layout.Section>
+                        <Banner tone="critical">
+                            <p>{error}</p>
+                        </Banner>
+                        <Card>
+                            <div style={{ padding: '60px', textAlign: 'center' }}>
+                                <Text as="p" variant="bodyMd" tone="subdued">
+                                    Unable to load dashboard data
+                                </Text>
+                                <div style={{ marginTop: '16px' }}>
+                                    <Button onClick={handleRefresh}>
+                                        Try Again
+                                    </Button>
+                                </div>
+                            </div>
+                        </Card>
+                    </Layout.Section>
+                </Layout>
+            </Page>
+        );
+    }
+
+    // 确保 stats 不为 null
+    if (!stats) {
+        return null;
+    }
 
     return (
-        <Page title="Dashboard" subtitle="Product Import System Overview">
+        <Page
+            title="Dashboard"
+            subtitle={`Product Import System Overview • Last updated: ${lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : 'Never'}`}
+            secondaryActions={[
+                {
+                    content: 'Refresh',
+                    icon: RefreshIcon,
+                    onAction: handleRefresh,
+                    loading: loading
+                }
+            ]}
+        >
             <Layout>
+                {error && (
+                    <Layout.Section>
+                        <Banner tone="warning">
+                            <p>{error} - Data may be outdated</p>
+                        </Banner>
+                    </Layout.Section>
+                )}
+
                 {/* 统计卡片 */}
                 <Layout.Section>
                     <Grid>
@@ -120,9 +230,9 @@ const DashboardPage: React.FC<DashboardPageProps> = () => {
                             <BlockStack gap="400">
                                 <InlineStack align="space-between">
                                     <Text as="h3" variant="headingMd">Product Import Status</Text>
-                                    <Text as="span">{Math.round(importProgress)}% Completed</Text>
+                                    <Text as="span">{stats.importProgress}% Completed</Text>
                                 </InlineStack>
-                                <ProgressBar progress={importProgress} />
+                                <ProgressBar progress={stats.importProgress} />
                                 <Grid>
                                     <Grid.Cell columnSpan={{ xs: 6, sm: 2, md: 2, lg: 4, xl: 4 }}>
                                         <BlockStack gap="200">
@@ -194,7 +304,7 @@ const DashboardPage: React.FC<DashboardPageProps> = () => {
                                     Manage Brands
                                 </Button>
                                 <Button size="large">
-                                        View Import History
+                                    View Import History
                                 </Button>
                             </BlockStack>
                         </BlockStack>
