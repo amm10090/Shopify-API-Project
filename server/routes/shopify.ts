@@ -3,7 +3,7 @@ import { prisma } from '../index';
 import { ShopifyService } from '../services/ShopifyService';
 import { verifyShopifySession } from './auth';
 import { logger } from '../utils/logger';
-import { ApiResponse } from '../../shared/types';
+import { ApiResponse } from '../../shared/types/index';
 
 const router = Router();
 const shopifyService = new ShopifyService();

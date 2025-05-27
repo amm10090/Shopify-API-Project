@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../index';
 import { ProductRetriever } from '../services/ProductRetriever';
 import { logger } from '../utils/logger';
-import { ApiResponse, PaginatedResponse, UnifiedProduct, ProductFilters } from '../../shared/types';
+import { ApiResponse, PaginatedResponse, UnifiedProduct, ProductFilters } from '../../shared/types/index';
 
 const router = Router();
 const productRetriever = new ProductRetriever();

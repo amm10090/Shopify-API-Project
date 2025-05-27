@@ -1,6 +1,6 @@
 import axios, { AxiosResponse } from 'axios';
 import { logger } from '../utils/logger';
-import { UnifiedProduct, CJProduct, PepperjamProduct, CJFetchParams, PepperjamFetchParams } from '../../shared/types';
+import { UnifiedProduct, CJProduct, PepperjamProduct, CJFetchParams, PepperjamFetchParams } from '../../shared/types/index';
 import { cjApiLimitChecker, pepperjamApiLimitChecker } from '../config/apiLimits';
 
 export class ProductRetriever {
