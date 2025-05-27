@@ -6,6 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import { createClient } from 'redis';
 
 // 导入路由
+import authRoutes from './routes/auth';
 import productRoutes from './routes/products';
 import brandRoutes from './routes/brands';
 import importRoutes from './routes/import';
@@ -57,6 +58,7 @@ app.get('/health', (req, res) => {
 });
 
 // API 路由
+app.use('/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/brands', brandRoutes);
 app.use('/api/import', importRoutes);

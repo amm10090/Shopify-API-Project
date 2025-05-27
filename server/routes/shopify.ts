@@ -1,11 +1,15 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../index';
 import { ShopifyService } from '../services/ShopifyService';
+import { verifyShopifySession } from './auth';
 import { logger } from '../utils/logger';
 import { ApiResponse } from '@shared/types';
 
 const router = Router();
 const shopifyService = new ShopifyService();
+
+// 应用会话验证中间件到所有路由
+router.use(verifyShopifySession);
 
 /**
  * 导入产品到Shopify
@@ -73,25 +77,31 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
                     sku: product.sku || undefined
                 };
 
+                // 获取当前会话
+                const session = (req as any).shopifySession;
+
                 // 检查是否已存在于Shopify
                 let shopifyProduct;
                 if (product.shopifyProductId) {
                     // 更新现有产品
                     shopifyProduct = await shopifyService.updateProduct(
+                        session,
                         product.shopifyProductId,
                         unifiedProduct
                     );
                 } else {
                     // 检查SKU是否已存在
-                    const existingProduct = await shopifyService.getProductBySku(product.sku!);
+                    const existingProduct = await shopifyService.getProductBySku(session, product.sku!);
                     if (existingProduct) {
                         shopifyProduct = await shopifyService.updateProduct(
+                            session,
                             existingProduct.id,
                             unifiedProduct
                         );
                     } else {
                         // 创建新产品
                         shopifyProduct = await shopifyService.createProduct(
+                            session,
                             unifiedProduct,
                             'draft'
                         );
@@ -102,6 +112,7 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
                     // 创建或获取品牌集合
                     const collectionTitle = `${product.brand.name} - API Products - Draft`;
                     const collection = await shopifyService.getOrCreateCollection(
+                        session,
                         collectionTitle,
                         undefined,
                         false,
@@ -111,6 +122,7 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
                     // 添加产品到集合
                     if (collection) {
                         await shopifyService.addProductToCollection(
+                            session,
                             shopifyProduct.id,
                             collection.id
                         );
@@ -118,6 +130,7 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
 
                     // 设置联盟链接元字段
                     await shopifyService.setProductMetafield(
+                        session,
                         shopifyProduct.id,
                         'custom',
                         'affiliate_link',
@@ -229,8 +242,12 @@ router.post('/sync/:productId', async (req: Request, res: Response, next: NextFu
             sku: product.sku || undefined
         };
 
+        // 获取当前会话
+        const session = (req as any).shopifySession;
+
         // 更新Shopify产品
         const shopifyProduct = await shopifyService.updateProduct(
+            session,
             product.shopifyProductId,
             unifiedProduct
         );
@@ -238,6 +255,7 @@ router.post('/sync/:productId', async (req: Request, res: Response, next: NextFu
         if (shopifyProduct) {
             // 更新联盟链接元字段
             await shopifyService.setProductMetafield(
+                session,
                 product.shopifyProductId,
                 'custom',
                 'affiliate_link',
@@ -272,8 +290,9 @@ router.post('/sync/:productId', async (req: Request, res: Response, next: NextFu
  */
 router.get('/status', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        // 简单的连接测试 - 尝试获取店铺信息
-        const isConnected = !!(process.env.SHOPIFY_ACCESS_TOKEN && process.env.SHOPIFY_STORE_NAME);
+        // 获取当前会话
+        const session = (req as any).shopifySession;
+        const isConnected = !!(session && session.accessToken);
 
         const stats = await prisma.product.groupBy({
             by: ['importStatus'],
@@ -297,7 +316,7 @@ router.get('/status', async (req: Request, res: Response, next: NextFunction) =>
             success: true,
             data: {
                 connected: isConnected,
-                storeName: process.env.SHOPIFY_STORE_NAME || null,
+                storeName: session?.shop || null,
                 productStats: statusCounts,
                 lastCheck: new Date().toISOString()
             }
@@ -352,7 +371,11 @@ router.post('/bulk-status', async (req: Request, res: Response, next: NextFuncti
                     continue;
                 }
 
+                // 获取当前会话
+                const session = (req as any).shopifySession;
+
                 const success = await shopifyService.setProductStatus(
+                    session,
                     product.shopifyProductId,
                     status as 'active' | 'draft'
                 );

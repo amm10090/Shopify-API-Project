@@ -5,14 +5,12 @@ import { UnifiedProduct, ShopifyProduct } from '@shared/types';
 
 export class ShopifyService {
     private shopify: any;
-    private session: Session;
 
     constructor() {
         // 检查必需的环境变量
         const requiredEnvVars = {
             SHOPIFY_API_KEY: process.env.SHOPIFY_API_KEY,
-            SHOPIFY_ACCESS_TOKEN: process.env.SHOPIFY_ACCESS_TOKEN,
-            SHOPIFY_STORE_NAME: process.env.SHOPIFY_STORE_NAME
+            SHOPIFY_API_SECRET: process.env.SHOPIFY_API_SECRET
         };
 
         for (const [key, value] of Object.entries(requiredEnvVars)) {
@@ -23,16 +21,21 @@ export class ShopifyService {
 
         this.shopify = shopifyApi({
             apiKey: process.env.SHOPIFY_API_KEY!,
-            apiSecretKey: process.env.SHOPIFY_API_SECRET || process.env.SHOPIFY_SHARED_SECRET || 'dummy-secret',
-            scopes: ['read_products', 'write_products', 'read_inventory', 'write_inventory'],
+            apiSecretKey: process.env.SHOPIFY_API_SECRET!,
+            scopes: [
+                'read_products',
+                'write_products',
+                'read_inventory',
+                'write_inventory',
+                'read_product_listings',
+                'write_product_listings',
+                'read_collections',
+                'write_collections'
+            ],
             hostName: process.env.SHOPIFY_HOST_NAME || 'localhost:3000',
-            apiVersion: ApiVersion.April24,
-            isEmbeddedApp: false, // 设为 false，因为这是服务器端应用
+            apiVersion: ApiVersion.July24,
+            isEmbeddedApp: true,
         });
-
-        // 创建离线会话用于服务器端操作
-        this.session = this.shopify.session.customAppSession(process.env.SHOPIFY_STORE_NAME!);
-        this.session.accessToken = process.env.SHOPIFY_ACCESS_TOKEN!;
 
         logger.info('ShopifyService initialized successfully');
     }
@@ -41,6 +44,7 @@ export class ShopifyService {
      * 创建或获取产品集合
      */
     async getOrCreateCollection(
+        session: Session,
         title: string,
         handle?: string,
         published: boolean = false,
@@ -59,7 +63,7 @@ export class ShopifyService {
 
             // 使用 REST API 查找现有集合
             const collectionsResponse = await this.shopify.rest.CustomCollection.all({
-                session: this.session,
+                session,
                 limit: 250
             });
 
@@ -97,7 +101,7 @@ export class ShopifyService {
             }
 
             // 创建新集合
-            const collection = new this.shopify.rest.CustomCollection({ session: this.session });
+            const collection = new this.shopify.rest.CustomCollection({ session });
             collection.title = title;
             collection.handle = handle;
             collection.body_html = bodyHtml;
@@ -119,9 +123,9 @@ export class ShopifyService {
     /**
      * 添加产品到集合
      */
-    async addProductToCollection(productId: string, collectionId: string): Promise<any> {
+    async addProductToCollection(session: Session, productId: string, collectionId: string): Promise<any> {
         try {
-            const collect = new this.shopify.rest.Collect({ session: this.session });
+            const collect = new this.shopify.rest.Collect({ session });
             collect.product_id = productId;
             collect.collection_id = collectionId;
 
@@ -143,10 +147,10 @@ export class ShopifyService {
     /**
      * 根据SKU查找产品
      */
-    async getProductBySku(sku: string): Promise<any> {
+    async getProductBySku(session: Session, sku: string): Promise<any> {
         try {
             const products = await this.shopify.rest.Product.all({
-                session: this.session,
+                session,
                 limit: 250
             });
 
@@ -171,11 +175,11 @@ export class ShopifyService {
     /**
      * 创建新产品
      */
-    async createProduct(unifiedProduct: UnifiedProduct, status: string = 'draft'): Promise<any> {
+    async createProduct(session: Session, unifiedProduct: UnifiedProduct, status: string = 'draft'): Promise<any> {
         try {
             logger.info(`Creating Shopify product: SKU='${unifiedProduct.sku}', Title='${unifiedProduct.title}'`);
 
-            const product = new this.shopify.rest.Product({ session: this.session });
+            const product = new this.shopify.rest.Product({ session });
             product.title = unifiedProduct.title;
             product.body_html = unifiedProduct.description;
             product.vendor = unifiedProduct.brandName;
@@ -215,7 +219,7 @@ export class ShopifyService {
 
             // 设置库存
             if (unifiedProduct.availability && product.variants && product.variants[0]) {
-                await this.setInventory(product.variants[0].inventory_item_id, 99);
+                await this.setInventory(session, product.variants[0].inventory_item_id, 99);
             }
 
             return product;
@@ -229,12 +233,12 @@ export class ShopifyService {
     /**
      * 更新产品
      */
-    async updateProduct(productId: string, unifiedProduct: UnifiedProduct): Promise<any> {
+    async updateProduct(session: Session, productId: string, unifiedProduct: UnifiedProduct): Promise<any> {
         try {
             logger.info(`Updating Shopify product ID: ${productId}`);
 
             const product = await this.shopify.rest.Product.find({
-                session: this.session,
+                session,
                 id: productId
             });
 
@@ -313,6 +317,7 @@ export class ShopifyService {
      * 设置产品元字段
      */
     async setProductMetafield(
+        session: Session,
         productId: string,
         namespace: string,
         key: string,
@@ -322,7 +327,7 @@ export class ShopifyService {
         try {
             // 查找现有元字段
             const metafields = await this.shopify.rest.Metafield.all({
-                session: this.session,
+                session,
                 metafield: {
                     owner_id: productId,
                     owner_resource: 'product'
@@ -342,7 +347,7 @@ export class ShopifyService {
                 return existingMetafield;
             } else {
                 // 创建新元字段
-                const metafield = new this.shopify.rest.Metafield({ session: this.session });
+                const metafield = new this.shopify.rest.Metafield({ session });
                 metafield.namespace = namespace;
                 metafield.key = key;
                 metafield.value = value;
@@ -364,17 +369,17 @@ export class ShopifyService {
     /**
      * 设置库存
      */
-    private async setInventory(inventoryItemId: string, quantity: number): Promise<void> {
+    private async setInventory(session: Session, inventoryItemId: string, quantity: number): Promise<void> {
         try {
             const locations = await this.shopify.rest.Location.all({
-                session: this.session
+                session
             });
 
             if (locations.data.length > 0) {
                 const locationId = locations.data[0].id;
 
                 await this.shopify.rest.InventoryLevel.set({
-                    session: this.session,
+                    session,
                     location_id: locationId,
                     inventory_item_id: inventoryItemId,
                     available: quantity
@@ -391,10 +396,10 @@ export class ShopifyService {
     /**
      * 设置产品状态
      */
-    async setProductStatus(productId: string, status: 'active' | 'draft'): Promise<boolean> {
+    async setProductStatus(session: Session, productId: string, status: 'active' | 'draft'): Promise<boolean> {
         try {
             const product = await this.shopify.rest.Product.find({
-                session: this.session,
+                session,
                 id: productId
             });
 
@@ -437,10 +442,10 @@ export class ShopifyService {
     /**
      * 删除产品
      */
-    async deleteProduct(productId: string): Promise<boolean> {
+    async deleteProduct(session: Session, productId: string): Promise<boolean> {
         try {
             const product = await this.shopify.rest.Product.find({
-                session: this.session,
+                session,
                 id: productId
             });
 
@@ -450,7 +455,7 @@ export class ShopifyService {
             }
 
             await this.shopify.rest.Product.delete({
-                session: this.session,
+                session,
                 id: productId
             });
 
@@ -461,5 +466,12 @@ export class ShopifyService {
             logger.error(`Error deleting product ${productId}:`, error);
             return false;
         }
+    }
+
+    /**
+     * 获取Shopify API实例（用于其他操作）
+     */
+    getShopifyApi() {
+        return this.shopify;
     }
 } 
