@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+import path from 'path';
 import { PrismaClient } from '@prisma/client';
 import { createClient } from 'redis';
 
@@ -66,16 +67,36 @@ app.use('/api/shopify', shopifyRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/settings', settingsRoutes);
 
+// 在生产环境中提供静态文件
+if (process.env.NODE_ENV === 'production') {
+    // 提供构建后的前端静态文件
+    app.use(express.static(path.join(__dirname, '../client')));
+
+    // 对于所有非API路由，返回index.html（支持前端路由）
+    app.get('*', (req, res) => {
+        // 跳过API路由
+        if (req.path.startsWith('/api') || req.path.startsWith('/auth')) {
+            res.status(404).json({
+                success: false,
+                error: 'Route not found'
+            });
+            return;
+        }
+
+        res.sendFile(path.join(__dirname, '../client/index.html'));
+    });
+} else {
+    // 开发环境的404处理
+    app.use((req, res) => {
+        res.status(404).json({
+            success: false,
+            error: 'Route not found'
+        });
+    });
+}
+
 // 错误处理中间件
 app.use(errorHandler);
-
-// 404 处理
-app.use((req, res) => {
-    res.status(404).json({
-        success: false,
-        error: 'Route not found'
-    });
-});
 
 // 启动服务器
 async function startServer() {
@@ -95,6 +116,10 @@ async function startServer() {
         app.listen(PORT, () => {
             logger.info(`Server running on port ${PORT}`);
             logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+
+            if (process.env.NODE_ENV === 'production') {
+                logger.info('Serving static files from dist/client');
+            }
         });
     } catch (error) {
         logger.error('Failed to start server:', error);

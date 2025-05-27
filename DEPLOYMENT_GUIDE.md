@@ -17,14 +17,18 @@
 # 安装依赖
 pnpm install
 
-# 构建前端
-pnpm run build:client
+# 一键构建（推荐）
+pnpm run build
 
-# 构建后端
-pnpm run build:server
+# 或者分步构建：
+# pnpm run build:server  # 构建后端
+# pnpm run build:client  # 构建前端
 
 # 生成Prisma客户端
 npx prisma generate
+
+# 或者使用部署脚本（推荐）
+./scripts/deploy.sh
 ```
 
 ### 3. 环境变量配置
@@ -58,6 +62,42 @@ CLIENT_URL=https://your-domain.com
 LOG_LEVEL=info
 DEFAULT_PRODUCT_LIMIT=50
 SKIP_IMAGE_VALIDATION=false
+```
+
+## 生产环境启动说明
+
+**重要：在生产环境中，你只需要启动一个服务进程！**
+
+### 为什么只需要启动服务端？
+
+1. **静态文件集成**：构建后的前端文件会被放在 `dist/client/` 目录
+2. **Express静态服务**：服务端会自动提供前端静态文件
+3. **单一入口点**：所有请求（API和前端路由）都由Express处理
+
+### 启动命令
+
+```bash
+# 方式1：使用npm脚本（推荐）
+pnpm start
+
+# 方式2：直接运行
+NODE_ENV=production node dist/server/index.js
+
+# 方式3：使用PM2（推荐用于生产）
+pm2 start dist/server/index.js --name "shopify-app"
+```
+
+### 文件结构
+```
+dist/
+├── server/           # 编译后的服务端代码
+│   ├── index.js     # 主入口文件
+│   ├── routes/      # API路由
+│   └── services/    # 业务逻辑
+└── client/          # 构建后的前端静态文件
+    ├── index.html   # 前端入口
+    ├── assets/      # CSS、JS等资源
+    └── ...
 ```
 
 ## 部署选项
