@@ -1,3 +1,8 @@
+// 在生产环境中设置模块别名
+if (process.env.NODE_ENV === 'production') {
+    require('module-alias/register');
+}
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -7,17 +12,17 @@ import { PrismaClient } from '@prisma/client';
 import { createClient } from 'redis';
 
 // 导入路由
-import authRoutes from './routes/auth';
-import productRoutes from './routes/products';
-import brandRoutes from './routes/brands';
-import importRoutes from './routes/import';
-import shopifyRoutes from './routes/shopify';
-import dashboardRoutes from './routes/dashboard';
-import settingsRoutes from './routes/settings';
+import authRoutes from '@server/routes/auth';
+import productRoutes from '@server/routes/products';
+import brandRoutes from '@server/routes/brands';
+import importRoutes from '@server/routes/import';
+import shopifyRoutes from '@server/routes/shopify';
+import dashboardRoutes from '@server/routes/dashboard';
+import settingsRoutes from '@server/routes/settings';
 
 // 导入中间件
-import { errorHandler } from './middleware/errorHandler';
-import { logger } from './utils/logger';
+import { errorHandler } from '@server/middleware/errorHandler';
+import { logger } from '@server/utils/logger';
 
 // 加载环境变量
 dotenv.config();

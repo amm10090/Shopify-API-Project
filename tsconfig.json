@@ -22,21 +22,23 @@
         "baseUrl": ".",
         "paths": {
             "@/*": [
-                "./src/*"
+                "./client/*"
             ],
             "@server/*": [
                 "./server/*"
             ],
             "@shared/*": [
                 "./shared/*"
+            ],
+            "@client/*": [
+                "./client/*"
             ]
         }
     },
     "include": [
-        "src/**/*",
+        "client/**/*",
         "server/**/*",
-        "shared/**/*",
-        "client/**/*"
+        "shared/**/*"
     ],
     "exclude": [
         "node_modules",

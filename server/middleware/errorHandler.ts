@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import { AppError, ValidationError, NotFoundError, ConflictError } from '../../shared/types/index';
-import { logger } from '../utils/logger';
+import { AppError, ValidationError, NotFoundError, ConflictError } from '@shared/types/index';
+import { logger } from '@server/utils/logger';
 
 export const errorHandler = (
     error: Error,

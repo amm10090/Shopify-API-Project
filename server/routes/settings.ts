@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { logger } from '../utils/logger';
-import { ApiResponse } from '../../shared/types/index';
+import { logger } from '@server/utils/logger';
+import { ApiResponse } from '@shared/types/index';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
@@ -357,7 +357,7 @@ router.get('/status', async (req: Request, res: Response, next: NextFunction) =>
 
         // 检查数据库连接
         try {
-            const { prisma } = require('../index');
+            const { prisma } = require('@server/index');
             await prisma.$queryRaw`SELECT 1`;
             status.database = 'connected';
         } catch (error) {

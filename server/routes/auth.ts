@@ -1,8 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { shopifyApi, ApiVersion, Session } from '@shopify/shopify-api';
 import '@shopify/shopify-api/adapters/node';
-import { prisma } from '../index';
-import { logger } from '../utils/logger';
+import { prisma } from '@server/index';
+import { logger } from '@server/utils/logger';
 
 const router = Router();
 

@@ -2,17 +2,18 @@
     "name": "shopify-product-importer",
     "version": "1.0.0",
     "description": "Modern Shopify app for importing products from CJ and Pepperjam APIs",
-    "main": "dist/server/server/index.js",
+    "main": "dist/server/index.js",
     "packageManager": "pnpm@10.11.0",
     "scripts": {
         "dev": "concurrently \"pnpm run dev:server\" \"pnpm run dev:client\"",
-        "dev:server": "nodemon --exec ts-node -r tsconfig-paths/register server/index.ts",
+        "dev:server": "nodemon --exec ts-node -r tsconfig-paths/register -r dotenv/config server/index.ts",
         "dev:client": "vite",
-        "build": "pnpm run build:server && pnpm run build:client",
+        "build": "chmod +x scripts/build.sh && ./scripts/build.sh",
         "build:server": "tsc -p server/tsconfig.json",
         "build:client": "vite build",
-        "start": "node dist/server/server/index.js",
-        "start:prod": "NODE_ENV=production node dist/server/server/index.js",
+        "copy-shared": "cp -r shared dist/",
+        "start": "node -r tsconfig-paths/register -r module-alias/register dist/server/index.js",
+        "start:prod": "NODE_ENV=production node -r tsconfig-paths/register -r module-alias/register dist/server/index.js",
         "deploy": "./scripts/deploy.sh",
         "prod:check": "./scripts/production-check.sh",
         "prod:migrate": "npx prisma migrate deploy",
@@ -20,6 +21,7 @@
         "type-check": "tsc --noEmit",
         "test": "jest",
         "clean": "rimraf dist node_modules/.cache",
+        "verify-paths": "node scripts/verify-paths.js",
         "postinstall": "prisma generate",
         "db:seed": "tsx prisma/seed.ts"
     },
@@ -34,7 +36,7 @@
         "bull": "^4.12.2",
         "cors": "^2.8.5",
         "dotenv": "^16.3.1",
-        "express": "^5.1.0",
+        "express": "^4.21.2",
         "helmet": "^8.1.0",
         "jsonwebtoken": "^9.0.2",
         "node-cron": "^4.0.7",
@@ -56,6 +58,7 @@
         "@vitejs/plugin-react": "^4.2.1",
         "concurrently": "^9.1.2",
         "eslint": "^9.27.0",
+        "module-alias": "^2.2.3",
         "nodemon": "^3.0.2",
         "react": "^19.1.0",
         "react-dom": "^19.1.0",
@@ -69,6 +72,10 @@
     "engines": {
         "node": ">=18.0.0",
         "pnpm": ">=10.0.0"
+    },
+    "_moduleAliases": {
+        "@shared": "dist/shared",
+        "@server": "dist/server"
     },
     "keywords": [
         "shopify",

@@ -1,9 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { prisma } from '../index';
-import { ShopifyService } from '../services/ShopifyService';
-import { verifyShopifySession } from './auth';
-import { logger } from '../utils/logger';
-import { ApiResponse } from '../../shared/types/index';
+import { prisma } from '@server/index';
+import { ShopifyService } from '@server/services/ShopifyService';
+import { verifyShopifySession } from '@server/routes/auth';
+import { logger } from '@server/utils/logger';
+import { ApiResponse } from '@shared/types/index';
 
 const router = Router();
 const shopifyService = new ShopifyService();

@@ -1,7 +1,7 @@
 import axios, { AxiosResponse } from 'axios';
-import { logger } from '../utils/logger';
-import { UnifiedProduct, CJProduct, PepperjamProduct, CJFetchParams, PepperjamFetchParams } from '../../shared/types/index';
-import { cjApiLimitChecker, pepperjamApiLimitChecker } from '../config/apiLimits';
+import { logger } from '@server/utils/logger';
+import { UnifiedProduct, CJProduct, PepperjamProduct, CJFetchParams, PepperjamFetchParams } from '@shared/types/index';
+import { cjApiLimitChecker, pepperjamApiLimitChecker } from '@server/config/apiLimits';
 
 export class ProductRetriever {
     private skipImageValidation: boolean;

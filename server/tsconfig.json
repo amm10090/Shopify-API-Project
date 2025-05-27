@@ -5,7 +5,7 @@
         "lib": [
             "ES2020"
         ],
-        "outDir": "../dist/server",
+        "outDir": "../dist",
         "rootDir": "..",
         "strict": true,
         "esModuleInterop": true,
@@ -14,10 +14,13 @@
         "forceConsistentCasingInFileNames": true,
         "moduleResolution": "node",
         "resolveJsonModule": true,
-        "baseUrl": ".",
+        "baseUrl": "../",
         "paths": {
             "@shared/*": [
-                "../shared/*"
+                "shared/*"
+            ],
+            "@server/*": [
+                "server/*"
             ]
         },
         "typeRoots": [
@@ -31,6 +34,7 @@
     "exclude": [
         "../node_modules",
         "../dist",
-        "../client"
+        "../client",
+        "../src"
     ]
 }
