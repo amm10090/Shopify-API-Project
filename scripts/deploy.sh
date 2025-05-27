@@ -159,7 +159,7 @@ deploy_heroku() {
     # 创建Procfile
     log_info "创建 Procfile..."
     cat > Procfile << EOF
-web: node dist/server/index.js
+web: node dist/server/server/index.js
 release: npx prisma migrate deploy
 EOF
     
@@ -224,7 +224,7 @@ deploy_vps() {
         npx prisma migrate deploy
         
         # 重启应用
-        pm2 restart shopify-app || pm2 start dist/server/index.js --name shopify-app
+        pm2 restart shopify-app || pm2 start dist/server/server/index.js --name shopify-app
         
         # 清理
         rm /tmp/deploy.tar.gz

@@ -7,8 +7,8 @@ echo "🔍 检查生产环境准备情况..."
 echo ""
 echo "📁 检查构建文件..."
 
-if [ ! -f "dist/server/index.js" ]; then
-    echo "❌ 服务端构建文件不存在: dist/server/index.js"
+if [ ! -f "dist/server/server/index.js" ]; then
+    echo "❌ 服务端构建文件不存在: dist/server/server/index.js"
     echo "   请运行: pnpm run build 或 ./scripts/deploy.sh"
     exit 1
 else
