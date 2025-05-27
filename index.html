@@ -5,6 +5,16 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Shopify Product Importer</title>
+    
+    <!-- Shopify App Bridge 必需的meta标签 -->
+    <meta name="shopify-api-key" content="%SHOPIFY_API_KEY%" />
+    <meta name="shopify-shop-domain" content="%SHOP%" />
+    <meta name="shopify-host" content="%HOST%" />
+    <meta name="shopify-embedded" content="%EMBEDDED%" />
+    <meta name="shopify-debug" content="true" />
+    
+    <!-- 预加载App Bridge -->
+    <script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>
   </head>
   <body>
     <div id="root"></div>

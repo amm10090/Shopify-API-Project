@@ -19,6 +19,7 @@ import importRoutes from '@server/routes/import';
 import shopifyRoutes from '@server/routes/shopify';
 import dashboardRoutes from '@server/routes/dashboard';
 import settingsRoutes from '@server/routes/settings';
+import webhookRoutes from '@server/routes/webhooks';
 
 // 导入中间件
 import { errorHandler } from '@server/middleware/errorHandler';
@@ -41,40 +42,44 @@ app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.shopify.com"],
             styleSrc: ["'self'", "'unsafe-inline'", "https:"],
             imgSrc: ["'self'", "data:", "https:"],
-            connectSrc: ["'self'"],
+            connectSrc: ["'self'", "https:"],
             fontSrc: ["'self'", "https:", "data:"],
             objectSrc: ["'none'"],
             mediaSrc: ["'self'"],
             frameSrc: ["'self'"],
-            // 移除 upgrade-insecure-requests 指令，避免强制HTTPS升级
+            frameAncestors: ["https://*.myshopify.com", "https://admin.shopify.com"],
             upgradeInsecureRequests: null,
         },
     },
-    // 在开发和HTTP环境下禁用强制HTTPS的安全头
     hsts: false,
     crossOriginOpenerPolicy: false,
     originAgentCluster: false,
 }));
+
 app.use(cors({
     origin: function (origin, callback) {
-        // 在生产环境中允许同源请求和配置的客户端URL
-        if (process.env.NODE_ENV === 'production') {
-            // 允许同源请求（没有origin）或配置的客户端URL
-            if (!origin || origin === process.env.CLIENT_URL) {
-                callback(null, true);
-            } else {
-                callback(null, true); // 临时允许所有来源，用于调试
-            }
-        } else {
-            // 开发环境允许所有来源
+        // 允许Shopify域名和本地开发
+        const allowedOrigins = [
+            /\.myshopify\.com$/,
+            /^https:\/\/admin\.shopify\.com$/,
+            /^http:\/\/localhost:/,
+            /^https:\/\/localhost:/
+        ];
+
+        if (!origin || allowedOrigins.some(pattern =>
+            typeof pattern === 'string' ? origin === pattern : pattern.test(origin)
+        )) {
             callback(null, true);
+        } else {
+            callback(null, true); // 临时允许所有来源
         }
     },
     credentials: true
 }));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -104,6 +109,7 @@ app.use('/api/import', importRoutes);
 app.use('/api/shopify', shopifyRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/webhooks', webhookRoutes);
 
 // 在生产环境中提供静态文件
 if (process.env.NODE_ENV === 'production') {
@@ -121,14 +127,96 @@ if (process.env.NODE_ENV === 'production') {
             return;
         }
 
-        res.sendFile(path.join(__dirname, '../client/index.html'));
+        // 读取并处理index.html模板
+        const htmlPath = path.join(__dirname, '../client/index.html');
+
+        try {
+            const fs = require('fs');
+            let html = fs.readFileSync(htmlPath, 'utf8');
+
+            // 从查询参数获取Shopify必需的参数
+            let shop = req.query.shop as string || '';
+            const host = req.query.host as string || '';
+            const embedded = req.query.embedded !== '0'; // 默认为嵌入式
+
+            // 验证和修正shop参数格式
+            if (shop && !shop.includes('.myshopify.com')) {
+                const correctedShop = shop.includes('.') ? shop : `${shop}.myshopify.com`;
+                logger.info(`Correcting shop parameter from '${shop}' to '${correctedShop}'`);
+                shop = correctedShop; // 使用修正后的值
+            }
+
+            // 验证host参数（Shopify的host必须是base64编码的）
+            let validHost = host;
+            if (host) {
+                // 检查是否已经是base64编码
+                if (!host.match(/^[A-Za-z0-9+/]+=*$/)) {
+                    logger.warn(`Host parameter '${host}' doesn't appear to be base64 encoded`);
+                    // 不要自动编码，而是记录警告
+                    // Shopify应该提供正确编码的host参数
+                } else {
+                    // 验证base64可以正确解码
+                    try {
+                        const decoded = Buffer.from(host, 'base64').toString('utf8');
+                        logger.debug(`Host parameter decoded: ${decoded}`);
+                    } catch (error) {
+                        logger.warn(`Host parameter cannot be decoded as base64: ${host}`);
+                    }
+                }
+            } else {
+                logger.warn('No host parameter provided - this may cause App Bridge issues');
+            }
+
+            // 替换模板变量
+            html = html.replace('%SHOPIFY_API_KEY%', process.env.SHOPIFY_API_KEY || '');
+            html = html.replace('%SHOP%', shop);
+            html = html.replace('%HOST%', validHost);
+            html = html.replace('%EMBEDDED%', embedded.toString());
+
+            // 注入配置脚本
+            const configScript = `
+                <script>
+                    window.shopifyConfig = {
+                        apiKey: '${process.env.SHOPIFY_API_KEY || ''}',
+                        shop: '${shop}',
+                        host: '${validHost}',
+                        embedded: ${embedded}
+                    };
+                    
+                    // 调试信息
+                    console.log('Server injected config:', window.shopifyConfig);
+                </script>
+            `;
+
+            // 在head标签结束前插入配置脚本
+            html = html.replace('</head>', `${configScript}</head>`);
+
+            logger.info(`Serving app with config: shop=${shop}, host=${validHost}, embedded=${embedded}`);
+
+            res.setHeader('Content-Type', 'text/html');
+            res.setHeader('X-Frame-Options', 'ALLOWALL');
+            res.send(html);
+        } catch (error) {
+            logger.error('Error serving index.html:', error);
+            res.status(500).send('Internal Server Error');
+        }
     });
 } else {
     // 开发环境的404处理
-    app.use((req, res) => {
+    app.get('*', (req, res) => {
+        // 跳过API路由
+        if (req.path.startsWith('/api') || req.path.startsWith('/auth')) {
+            res.status(404).json({
+                success: false,
+                error: 'Route not found'
+            });
+            return;
+        }
+
+        // 在开发环境中，Vite会处理这个路由
         res.status(404).json({
             success: false,
-            error: 'Route not found'
+            error: 'Route not found - use Vite dev server for frontend'
         });
     });
 }

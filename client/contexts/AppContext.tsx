@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { useAppBridge } from '@shopify/app-bridge-react';
+import { authenticatedFetch } from '@shopify/app-bridge/utilities';
 
 // 定义应用状态接口
 interface User {
@@ -8,12 +10,19 @@ interface User {
     shopDomain?: string;
 }
 
+interface ShopifySession {
+    shop: string;
+    scope: string;
+    isActive: boolean;
+}
+
 interface AppState {
     user: User | null;
     isAuthenticated: boolean;
     isLoading: boolean;
     toastMessage: string;
     toastActive: boolean;
+    shopifySession: ShopifySession | null;
 }
 
 // 定义 Context 操作接口
@@ -23,12 +32,14 @@ interface AppActions {
     setLoading: (loading: boolean) => void;
     showToast: (message: string) => void;
     hideToast: () => void;
+    setShopifySession: (session: ShopifySession | null) => void;
 }
 
 // 完整的 Context 接口
 interface AppContextType {
     state: AppState;
     actions: AppActions;
+    fetch: typeof fetch; // 认证后的fetch函数
 }
 
 // 创建 Context，初始值为 undefined
@@ -41,13 +52,38 @@ interface AppProviderProps {
 
 // Context Provider 组件
 export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
+    const app = useAppBridge();
+    const fetch = authenticatedFetch(app);
+
     const [state, setState] = useState<AppState>({
         user: null,
         isAuthenticated: false,
         isLoading: false,
         toastMessage: '',
         toastActive: false,
+        shopifySession: null,
     });
+
+    // 检查Shopify会话状态
+    const checkShopifySession = async () => {
+        try {
+            const response = await fetch('/auth/session');
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success) {
+                    setState(prev => ({
+                        ...prev,
+                        shopifySession: data.data,
+                        isAuthenticated: true,
+                    }));
+                    return true;
+                }
+            }
+        } catch (error) {
+            console.error('检查Shopify会话失败:', error);
+        }
+        return false;
+    };
 
     // 初始化用户状态
     useEffect(() => {
@@ -55,16 +91,29 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
             try {
                 setState(prev => ({ ...prev, isLoading: true }));
 
-                // 检查本地存储中的用户信息
-                const savedUser = localStorage.getItem('user');
-                const token = localStorage.getItem('token');
+                // 首先检查Shopify会话
+                const hasValidSession = await checkShopifySession();
 
-                if (savedUser && token) {
+                if (!hasValidSession) {
+                    // 检查URL参数以确定是否需要重定向到认证
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const shop = urlParams.get('shop');
+                    const host = urlParams.get('host');
+
+                    if (shop && !state.isAuthenticated) {
+                        // 重定向到Shopify认证
+                        window.location.href = `/auth/shopify?shop=${shop}&host=${host || ''}`;
+                        return;
+                    }
+                }
+
+                // 检查本地存储中的用户信息（作为备选）
+                const savedUser = localStorage.getItem('user');
+                if (savedUser && !state.user) {
                     const user = JSON.parse(savedUser);
                     setState(prev => ({
                         ...prev,
                         user,
-                        isAuthenticated: true,
                     }));
                 }
             } catch (error) {
@@ -81,7 +130,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     const actions: AppActions = {
         login: (user: User) => {
             localStorage.setItem('user', JSON.stringify(user));
-            localStorage.setItem('token', 'dummy-token'); // 实际项目中应该是真实的 token
             setState(prev => ({
                 ...prev,
                 user,
@@ -89,13 +137,20 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
             }));
         },
 
-        logout: () => {
+        logout: async () => {
+            try {
+                // 清理Shopify会话
+                await fetch('/auth/logout', { method: 'POST' });
+            } catch (error) {
+                console.error('登出失败:', error);
+            }
+
             localStorage.removeItem('user');
-            localStorage.removeItem('token');
             setState(prev => ({
                 ...prev,
                 user: null,
                 isAuthenticated: false,
+                shopifySession: null,
             }));
         },
 
@@ -109,6 +164,15 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
                 toastMessage: message,
                 toastActive: true,
             }));
+
+            // 自动隐藏toast
+            setTimeout(() => {
+                setState(prev => ({
+                    ...prev,
+                    toastActive: false,
+                    toastMessage: '',
+                }));
+            }, 4000);
         },
 
         hideToast: () => {
@@ -118,11 +182,20 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
                 toastMessage: '',
             }));
         },
+
+        setShopifySession: (session: ShopifySession | null) => {
+            setState(prev => ({
+                ...prev,
+                shopifySession: session,
+                isAuthenticated: !!session,
+            }));
+        },
     };
 
     const contextValue: AppContextType = {
         state,
         actions,
+        fetch, // 提供认证后的fetch函数
     };
 
     return (
@@ -151,6 +224,7 @@ export const useAuth = () => {
     return {
         user: state.user,
         isAuthenticated: state.isAuthenticated,
+        shopifySession: state.shopifySession,
         login: actions.login,
         logout: actions.logout,
     };
@@ -172,4 +246,10 @@ export const useToast = () => {
         showToast: actions.showToast,
         hideToast: actions.hideToast,
     };
+};
+
+// 认证后的fetch Hook
+export const useAuthenticatedFetch = () => {
+    const { fetch } = useAppContext();
+    return fetch;
 }; 

@@ -1,0 +1,41 @@
+# Shopify应用配置文件
+
+name = "Product Importer"
+client_id = "{{CLIENT_ID}}"  # 将在部署时自动填充
+application_url = "{{APPLICATION_URL}}"  # 将在部署时自动填充
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+dev_store_url = "{{DEV_STORE_URL}}"  # 您的开发商店URL
+
+[access_scopes]
+# 必需的权限范围
+scopes = "read_products,write_products,read_inventory,write_inventory,read_product_listings,write_product_listings,read_collections,write_collections"
+
+[auth]
+redirect_urls = [
+  "{{APPLICATION_URL}}/auth/shopify/callback",
+  "{{APPLICATION_URL}}/auth/callback"
+]
+
+[webhooks]
+api_version = "2024-07"
+
+[pos]
+embedded = false
+
+[[webhooks.subscriptions]]
+# 应用卸载webhook
+topics = [ "app/uninstalled" ]
+uri = "/api/webhooks/app/uninstalled"
+
+[[webhooks.subscriptions]]
+# 订单创建webhook (可选)
+topics = [ "orders/create" ]
+uri = "/api/webhooks/orders/create"
+
+[[webhooks.subscriptions]]
+# 产品更新webhook (可选)
+topics = [ "products/update" ]
+uri = "/api/webhooks/products/update" 

@@ -1,34 +1,34 @@
 {
     "name": "shopify-product-importer",
     "version": "1.0.0",
-    "description": "Modern Shopify app for importing products from CJ and Pepperjam APIs",
-    "main": "dist/server/index.js",
-    "packageManager": "pnpm@10.11.0",
+    "description": "Product importer for CJ and Pepperjam APIs to Shopify",
+    "private": false,
     "scripts": {
-        "dev": "concurrently \"pnpm run dev:server\" \"pnpm run dev:client\"",
-        "dev:server": "nodemon --exec ts-node -r tsconfig-paths/register -r dotenv/config server/index.ts",
+        "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+        "dev:server": "tsx watch --env-file=.env server/index.ts",
         "dev:client": "vite",
-        "build": "chmod +x scripts/build.sh && ./scripts/build.sh",
+        "build": "npm run build:client && npm run build:server",
         "build:server": "tsc -p server/tsconfig.json",
         "build:client": "vite build",
-        "copy-shared": "cp -r shared dist/",
-        "start": "node -r tsconfig-paths/register -r module-alias/register dist/server/index.js",
-        "start:prod": "NODE_ENV=production node -r tsconfig-paths/register -r module-alias/register dist/server/index.js",
-        "deploy": "./scripts/deploy.sh",
-        "prod:check": "./scripts/production-check.sh",
-        "prod:migrate": "npx prisma migrate deploy",
-        "lint": "eslint . --ext .ts,.tsx",
+        "start": "node dist/server/index.js",
+        "preview": "vite preview",
+        "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
         "type-check": "tsc --noEmit",
-        "test": "jest",
-        "clean": "rimraf dist node_modules/.cache",
-        "verify-paths": "node scripts/verify-paths.js",
-        "postinstall": "prisma generate",
-        "db:seed": "tsx prisma/seed.ts"
+        "clean": "rimraf dist",
+        "postinstall": "npm run build",
+        "deploy": "node scripts/deploy.js",
+        "deploy:prod": "NODE_ENV=production npm run deploy",
+        "test:routes": "node scripts/test-routes.js",
+        "check-env": "node scripts/check-env.js",
+        "shopify:generate": "shopify app init",
+        "shopify:dev": "shopify app dev",
+        "shopify:deploy": "shopify app deploy"
     },
     "dependencies": {
         "@prisma/client": "^6.8.2",
         "@shopify/admin-api-client": "^1.0.1",
         "@shopify/app-bridge": "^3.7.10",
+        "@shopify/app-bridge-react": "^3.7.10",
         "@shopify/polaris": "^13.9.5",
         "@shopify/polaris-icons": "^9.3.1",
         "@shopify/shopify-api": "11.12.0",
@@ -72,7 +72,7 @@
     },
     "engines": {
         "node": ">=18.0.0",
-        "pnpm": ">=10.0.0"
+        "npm": ">=8.0.0"
     },
     "_moduleAliases": {
         "@shared": "dist/shared",
@@ -80,12 +80,12 @@
     },
     "keywords": [
         "shopify",
-        "app",
         "product-import",
         "cj",
         "pepperjam",
-        "affiliate"
+        "affiliate-marketing"
     ],
-    "author": "Your Name",
-    "license": "MIT"
+    "author": "Your Name <your.email@example.com>",
+    "license": "MIT",
+    "packageManager": "pnpm@10.11.0+sha512.6540583f41cc5f628eb3d9773ecee802f4f9ef9923cc45b69890fb47991d4b092964694ec3a4f738a420c918a333062c8b925d312f42e4f0c263eb603551f977"
 }
