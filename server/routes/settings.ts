@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { logger } from '../utils/logger';
-import { ApiResponse } from '@shared/types';
+import { ApiResponse } from '../../shared/types';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';

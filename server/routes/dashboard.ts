@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
-import { ApiResponse } from '@shared/types';
+import { ApiResponse } from '../../shared/types';
 
 const router = Router();
 

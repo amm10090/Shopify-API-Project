@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { AppError, ValidationError, NotFoundError, ConflictError } from '@shared/types';
+import { AppError, ValidationError, NotFoundError, ConflictError } from '../../shared/types';
 import { logger } from '../utils/logger';
 
 export const errorHandler = (

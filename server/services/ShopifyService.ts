@@ -1,7 +1,7 @@
 import { shopifyApi, ApiVersion, Session } from '@shopify/shopify-api';
 import '@shopify/shopify-api/adapters/node';
 import { logger } from '../utils/logger';
-import { UnifiedProduct, ShopifyProduct } from '@shared/types';
+import { UnifiedProduct, ShopifyProduct } from '../../shared/types';
 
 export class ShopifyService {
     private shopify: any;
