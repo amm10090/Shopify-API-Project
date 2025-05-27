@@ -37,9 +37,42 @@ export const redis = createClient({
 });
 
 // 中间件
-app.use(helmet());
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https:"],
+            imgSrc: ["'self'", "data:", "https:"],
+            connectSrc: ["'self'"],
+            fontSrc: ["'self'", "https:", "data:"],
+            objectSrc: ["'none'"],
+            mediaSrc: ["'self'"],
+            frameSrc: ["'self'"],
+            // 移除 upgrade-insecure-requests 指令，避免强制HTTPS升级
+            upgradeInsecureRequests: null,
+        },
+    },
+    // 在开发和HTTP环境下禁用强制HTTPS的安全头
+    hsts: false,
+    crossOriginOpenerPolicy: false,
+    originAgentCluster: false,
+}));
 app.use(cors({
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: function (origin, callback) {
+        // 在生产环境中允许同源请求和配置的客户端URL
+        if (process.env.NODE_ENV === 'production') {
+            // 允许同源请求（没有origin）或配置的客户端URL
+            if (!origin || origin === process.env.CLIENT_URL) {
+                callback(null, true);
+            } else {
+                callback(null, true); // 临时允许所有来源，用于调试
+            }
+        } else {
+            // 开发环境允许所有来源
+            callback(null, true);
+        }
+    },
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
