@@ -113,10 +113,10 @@ app.use('/api/webhooks', webhookRoutes);
 
 // 在生产环境中提供静态文件
 if (process.env.NODE_ENV === 'production') {
-    // 提供构建后的前端静态文件
-    app.use(express.static(path.join(__dirname, '../client')));
+    // Serve built frontend static files
+    app.use(express.static(path.join(__dirname, '../dist/client')));
 
-    // 对于所有非API路由，返回index.html（支持前端路由）
+    // For all non-API routes, return index.html (support frontend routing)
     app.get('*', (req, res) => {
         // 跳过API路由
         if (req.path.startsWith('/api') || req.path.startsWith('/auth')) {
@@ -127,8 +127,8 @@ if (process.env.NODE_ENV === 'production') {
             return;
         }
 
-        // 读取并处理index.html模板
-        const htmlPath = path.join(__dirname, '../client/index.html');
+        // Read and process index.html template
+        const htmlPath = path.join(__dirname, '../dist/client/index.html');
 
         try {
             const fs = require('fs');
@@ -167,8 +167,14 @@ if (process.env.NODE_ENV === 'production') {
                 logger.warn('No host parameter provided - this may cause App Bridge issues');
             }
 
+            // 检查是否有必需的环境变量
+            const apiKey = process.env.SHOPIFY_API_KEY || '';
+            if (!apiKey) {
+                logger.error('SHOPIFY_API_KEY environment variable is not set');
+            }
+
             // 替换模板变量
-            html = html.replace('%SHOPIFY_API_KEY%', process.env.SHOPIFY_API_KEY || '');
+            html = html.replace('%SHOPIFY_API_KEY%', apiKey);
             html = html.replace('%SHOP%', shop);
             html = html.replace('%HOST%', validHost);
             html = html.replace('%EMBEDDED%', embedded.toString());
@@ -177,7 +183,7 @@ if (process.env.NODE_ENV === 'production') {
             const configScript = `
                 <script>
                     window.shopifyConfig = {
-                        apiKey: '${process.env.SHOPIFY_API_KEY || ''}',
+                        apiKey: '${apiKey}',
                         shop: '${shop}',
                         host: '${validHost}',
                         embedded: ${embedded}
@@ -185,13 +191,15 @@ if (process.env.NODE_ENV === 'production') {
                     
                     // 调试信息
                     console.log('Server injected config:', window.shopifyConfig);
+                    console.log('Request URL:', '${req.url}');
+                    console.log('Query params:', ${JSON.stringify(req.query)});
                 </script>
             `;
 
             // 在head标签结束前插入配置脚本
             html = html.replace('</head>', `${configScript}</head>`);
 
-            logger.info(`Serving app with config: shop=${shop}, host=${validHost}, embedded=${embedded}`);
+            logger.info(`Serving app with config: shop=${shop}, host=${validHost ? '***' : 'missing'}, embedded=${embedded}, apiKey=${apiKey ? '***' : 'missing'}`);
 
             res.setHeader('Content-Type', 'text/html');
             res.setHeader('X-Frame-Options', 'ALLOWALL');
