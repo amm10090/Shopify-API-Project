@@ -1,6 +1,10 @@
-// 在生产环境中设置模块别名
+// Module alias setup for production
 if (process.env.NODE_ENV === 'production') {
-    require('module-alias/register');
+    try {
+        require('module-alias/register');
+    } catch (error: any) {
+        console.warn('Module-alias not available, continuing without aliases:', error?.message || error);
+    }
 }
 
 import express from 'express';
@@ -11,33 +15,33 @@ import path from 'path';
 import { PrismaClient } from '@prisma/client';
 import { createClient } from 'redis';
 
-// 导入路由
-import authRoutes from '@server/routes/auth';
-import productRoutes from '@server/routes/products';
-import brandRoutes from '@server/routes/brands';
-import importRoutes from '@server/routes/import';
-import shopifyRoutes from '@server/routes/shopify';
-import dashboardRoutes from '@server/routes/dashboard';
-import settingsRoutes from '@server/routes/settings';
-import webhookRoutes from '@server/routes/webhooks';
+// Import routes
+import authRoutes from './routes/auth';
+import productRoutes from './routes/products';
+import brandRoutes from './routes/brands';
+import importRoutes from './routes/import';
+import shopifyRoutes from './routes/shopify';
+import dashboardRoutes from './routes/dashboard';
+import settingsRoutes from './routes/settings';
+import webhookRoutes from './routes/webhooks';
 
-// 导入中间件
-import { errorHandler } from '@server/middleware/errorHandler';
-import { logger } from '@server/utils/logger';
+// Import middleware
+import { errorHandler } from './middleware/errorHandler';
+import { logger } from './utils/logger';
 
-// 加载环境变量
+// Load environment variables
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 初始化数据库和Redis
+// Initialize database and Redis
 export const prisma = new PrismaClient();
 export const redis = createClient({
     url: process.env.REDIS_URL || 'redis://localhost:6379'
 });
 
-// 中间件
+// Middleware
 app.use(helmet({
     contentSecurityPolicy: {
         directives: {
@@ -83,7 +87,7 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// 请求日志
+// Request logging
 app.use((req, res, next) => {
     logger.info(`${req.method} ${req.path}`, {
         ip: req.ip,
@@ -92,7 +96,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// 健康检查
+// Health check
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
