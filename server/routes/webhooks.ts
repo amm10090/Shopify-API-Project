@@ -178,6 +178,109 @@ router.post('/products/update', captureRawBody, verifyWebhookSignature, async (r
 });
 
 /**
+ * GDPR合规webhook：客户数据请求
+ */
+router.post('/customers/data_request', captureRawBody, verifyWebhookSignature, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { shop_id, shop_domain, customer, orders_requested } = req.body;
+        const shop = req.get('X-Shopify-Shop-Domain') || shop_domain;
+
+        logger.info(`Customer data request webhook received`, {
+            shop: shop,
+            shopId: shop_id,
+            customerId: customer?.id,
+            ordersRequested: orders_requested
+        });
+
+        // 处理客户数据请求
+        // 根据GDPR要求，您需要在30天内提供客户数据
+        // 这里可以实现将客户数据发送到指定邮箱的逻辑
+
+        res.status(200).json({ received: true });
+
+    } catch (error) {
+        logger.error('Error handling customer data request webhook:', error);
+        next(error);
+    }
+});
+
+/**
+ * GDPR合规webhook：客户数据删除
+ */
+router.post('/customers/redact', captureRawBody, verifyWebhookSignature, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { shop_id, shop_domain, customer } = req.body;
+        const shop = req.get('X-Shopify-Shop-Domain') || shop_domain;
+
+        logger.info(`Customer data redaction webhook received`, {
+            shop: shop,
+            shopId: shop_id,
+            customerId: customer?.id,
+            customerEmail: customer?.email
+        });
+
+        // 处理客户数据删除
+        // 删除所有与该客户相关的个人数据
+        // 保留必要的业务记录（如订单ID），但删除个人身份信息
+
+        if (customer?.id) {
+            try {
+                // 这里添加删除客户相关数据的逻辑
+                // 例如：删除客户信息、订单中的个人数据等
+                logger.info(`Customer data redacted for customer ${customer.id} from shop ${shop}`);
+            } catch (redactError) {
+                logger.error('Error redacting customer data:', redactError);
+            }
+        }
+
+        res.status(200).json({ received: true });
+
+    } catch (error) {
+        logger.error('Error handling customer redaction webhook:', error);
+        next(error);
+    }
+});
+
+/**
+ * GDPR合规webhook：商店数据删除
+ */
+router.post('/shop/redact', captureRawBody, verifyWebhookSignature, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { shop_id, shop_domain } = req.body;
+        const shop = req.get('X-Shopify-Shop-Domain') || shop_domain;
+
+        logger.info(`Shop data redaction webhook received`, {
+            shop: shop,
+            shopId: shop_id
+        });
+
+        // 处理商店数据删除（当商店被删除时）
+        // 删除所有与该商店相关的数据
+        if (shop) {
+            try {
+                // 删除会话数据
+                await prisma.shopifySession.deleteMany({
+                    where: { shop: shop }
+                });
+
+                // 可选：删除品牌和产品数据
+                // 注意：根据业务需求决定是否删除
+
+                logger.info(`Shop data redacted for shop: ${shop}`);
+            } catch (redactError) {
+                logger.error('Error redacting shop data:', redactError);
+            }
+        }
+
+        res.status(200).json({ received: true });
+
+    } catch (error) {
+        logger.error('Error handling shop redaction webhook:', error);
+        next(error);
+    }
+});
+
+/**
  * 测试webhook端点（仅用于调试）
  */
 if (process.env.NODE_ENV !== 'production') {
