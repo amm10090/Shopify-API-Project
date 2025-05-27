@@ -6,7 +6,7 @@
             "ES2020"
         ],
         "outDir": "../dist/server",
-        "rootDir": ".",
+        "rootDir": "..",
         "strict": true,
         "esModuleInterop": true,
         "allowSyntheticDefaultImports": true,
