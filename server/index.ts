@@ -118,7 +118,7 @@ app.use('/api/webhooks', webhookRoutes);
 // 在生产环境中提供静态文件
 if (process.env.NODE_ENV === 'production') {
     // Serve built frontend static files
-    app.use(express.static(path.join(__dirname, '../dist/client')));
+    app.use(express.static(path.join(__dirname, '../client')));
 
     // For all non-API routes, return index.html (support frontend routing)
     app.get('*', (req, res) => {
@@ -132,7 +132,7 @@ if (process.env.NODE_ENV === 'production') {
         }
 
         // Read and process index.html template
-        const htmlPath = path.join(__dirname, '../dist/client/index.html');
+        const htmlPath = path.join(__dirname, '../client/index.html');
 
         try {
             const fs = require('fs');
