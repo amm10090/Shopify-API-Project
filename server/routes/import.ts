@@ -61,19 +61,38 @@ router.post('/start', async (req: Request, res: Response, next: NextFunction) =>
                 let products: any[] = [];
                 const keywordsList = keywords ? keywords.split(',').map((k: string) => k.trim()) : [];
 
+                logger.info(`Starting product fetch for brand: ${brand.name} (${brand.apiType}), API ID: ${brand.apiId}, Keywords: [${keywordsList.join(', ')}], Limit: ${limit}`);
+
                 if (brand.apiType === 'CJ') {
+                    // 检查CJ API配置
+                    if (!process.env.CJ_API_TOKEN) {
+                        throw new Error('CJ_API_TOKEN not configured');
+                    }
+                    if (!process.env.CJ_CID && !process.env.BRAND_CID) {
+                        throw new Error('CJ_CID or BRAND_CID not configured');
+                    }
+
                     products = await productRetriever.fetchCJProducts({
                         advertiserId: brand.apiId,
                         keywords: keywordsList,
                         limit
                     });
                 } else if (brand.apiType === 'PEPPERJAM') {
+                    // 检查Pepperjam API配置
+                    if (!process.env.ASCEND_API_KEY && !process.env.PEPPERJAM_API_KEY) {
+                        throw new Error('ASCEND_API_KEY or PEPPERJAM_API_KEY not configured');
+                    }
+
                     products = await productRetriever.fetchPepperjamProducts({
                         programId: brand.apiId,
                         keywords: keywordsList,
                         limit
                     });
+                } else {
+                    throw new Error(`Unsupported API type: ${brand.apiType}`);
                 }
+
+                logger.info(`Product fetch completed for brand: ${brand.name}, found ${products.length} products`);
 
                 // 保存产品到数据库
                 const savedProducts: any[] = [];

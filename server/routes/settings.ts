@@ -2,6 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { logger } from '../utils/logger';
 import { ApiResponse } from '@shared/types';
 import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
 
 const router = Router();
 
@@ -42,6 +44,112 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     } catch (error) {
         logger.error('Error fetching settings:', error);
         next(error);
+    }
+});
+
+/**
+ * 保存系统设置
+ */
+router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const {
+            cjApiToken,
+            cjCompanyId,
+            pepperjamApiKey,
+            shopifyStoreUrl,
+            shopifyAccessToken,
+            defaultProductLimit,
+            skipImageValidation,
+            autoImportEnabled,
+            importSchedule,
+            emailNotifications,
+            notificationEmail
+        } = req.body;
+
+        logger.info('Saving system settings', {
+            hasCjToken: !!cjApiToken,
+            hasCjCompanyId: !!cjCompanyId,
+            hasPepperjamKey: !!pepperjamApiKey,
+            hasShopifyUrl: !!shopifyStoreUrl,
+            hasShopifyToken: !!shopifyAccessToken,
+            defaultProductLimit,
+            skipImageValidation
+        });
+
+        // 读取现有的 .env 文件
+        const envPath = path.join(process.cwd(), '.env');
+        let envContent = '';
+
+        try {
+            envContent = fs.readFileSync(envPath, 'utf8');
+        } catch (error) {
+            logger.warn('No existing .env file found, creating new one');
+        }
+
+        // 解析现有的环境变量
+        const envVars: Record<string, string> = {};
+        envContent.split('\n').forEach(line => {
+            const trimmedLine = line.trim();
+            if (trimmedLine && !trimmedLine.startsWith('#')) {
+                const [key, ...valueParts] = trimmedLine.split('=');
+                if (key && valueParts.length > 0) {
+                    envVars[key.trim()] = valueParts.join('=').trim();
+                }
+            }
+        });
+
+        // 更新环境变量
+        if (cjApiToken) {
+            envVars['CJ_API_TOKEN'] = cjApiToken;
+            process.env.CJ_API_TOKEN = cjApiToken;
+        }
+        if (cjCompanyId) {
+            envVars['BRAND_CID'] = cjCompanyId;
+            process.env.BRAND_CID = cjCompanyId;
+        }
+        if (pepperjamApiKey) {
+            envVars['ASCEND_API_KEY'] = pepperjamApiKey;
+            process.env.ASCEND_API_KEY = pepperjamApiKey;
+        }
+        if (shopifyStoreUrl) {
+            envVars['SHOPIFY_STORE_NAME'] = shopifyStoreUrl;
+            process.env.SHOPIFY_STORE_NAME = shopifyStoreUrl;
+        }
+        if (shopifyAccessToken) {
+            envVars['SHOPIFY_ACCESS_TOKEN'] = shopifyAccessToken;
+            process.env.SHOPIFY_ACCESS_TOKEN = shopifyAccessToken;
+        }
+        if (defaultProductLimit !== undefined) {
+            envVars['DEFAULT_PRODUCT_LIMIT'] = defaultProductLimit.toString();
+            process.env.DEFAULT_PRODUCT_LIMIT = defaultProductLimit.toString();
+        }
+        if (skipImageValidation !== undefined) {
+            envVars['SKIP_IMAGE_VALIDATION'] = skipImageValidation.toString();
+            process.env.SKIP_IMAGE_VALIDATION = skipImageValidation.toString();
+        }
+
+        // 重新构建 .env 文件内容
+        const newEnvContent = Object.entries(envVars)
+            .map(([key, value]) => `${key}=${value}`)
+            .join('\n');
+
+        // 写入 .env 文件
+        fs.writeFileSync(envPath, newEnvContent);
+
+        logger.info('Settings saved successfully to .env file');
+
+        res.json({
+            success: true,
+            message: 'Settings saved successfully'
+        });
+
+    } catch (error) {
+        logger.error('Error saving settings:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to save settings',
+            details: error instanceof Error ? error.message : 'Unknown error'
+        });
     }
 });
 

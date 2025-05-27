@@ -96,8 +96,13 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
 
             if (settingsResponse.success && settingsResponse.data) {
                 setSettings(settingsResponse.data);
+
+                // 填充系统设置表单字段
                 setDefaultProductLimit(settingsResponse.data.system.defaultProductLimit.toString());
                 setSkipImageValidation(settingsResponse.data.system.skipImageValidation);
+
+                // 注意：出于安全考虑，API密钥等敏感信息不会从后端返回
+                // 用户需要重新输入这些信息来更新它们
             }
 
             if (statusResponse.success && statusResponse.data) {
@@ -193,22 +198,76 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
         }
     }, [shopifyStoreUrl, shopifyAccessToken, showToast]);
 
-    // 保存设置（这里只是模拟，实际需要后端支持）
+    // 保存设置
     const handleSaveSettings = useCallback(async (settingsType: string) => {
         setSavingSettings(true);
         try {
-            // 模拟保存操作
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            showToast(`${settingsType} settings saved successfully`);
-            
-            // 重新获取设置以更新状态
-            await fetchSettings();
+            let settingsData: any = {};
+
+            // 根据设置类型构建要保存的数据
+            switch (settingsType) {
+                case 'API':
+                    settingsData = {
+                        cjApiToken: cjApiToken || undefined,
+                        cjCompanyId: cjCompanyId || undefined,
+                        pepperjamApiKey: pepperjamApiKey || undefined
+                    };
+                    break;
+                case 'Shopify':
+                    settingsData = {
+                        shopifyStoreUrl: shopifyStoreUrl || undefined,
+                        shopifyAccessToken: shopifyAccessToken || undefined
+                    };
+                    break;
+                case 'Import':
+                    settingsData = {
+                        defaultProductLimit: parseInt(defaultProductLimit) || 50,
+                        skipImageValidation: skipImageValidation,
+                        autoImportEnabled: autoImportEnabled,
+                        importSchedule: importSchedule
+                    };
+                    break;
+                case 'Notification':
+                    settingsData = {
+                        emailNotifications: emailNotifications,
+                        notificationEmail: notificationEmail || undefined
+                    };
+                    break;
+                default:
+                    throw new Error(`Unknown settings type: ${settingsType}`);
+            }
+
+            // 调用后端 API 保存设置
+            const response = await settingsApi.saveSettings(settingsData);
+
+            if (response.success) {
+                showToast(`${settingsType} settings saved successfully`);
+                // 重新获取设置以更新状态
+                await fetchSettings();
+            } else {
+                throw new Error(response.error || 'Failed to save settings');
+            }
         } catch (error) {
-            showToast(`Failed to save ${settingsType} settings`);
+            console.error('Error saving settings:', error);
+            showToast(`Failed to save ${settingsType} settings: ${error instanceof Error ? error.message : 'Unknown error'}`);
         } finally {
             setSavingSettings(false);
         }
-    }, [showToast, fetchSettings]);
+    }, [
+        cjApiToken,
+        cjCompanyId,
+        pepperjamApiKey,
+        shopifyStoreUrl,
+        shopifyAccessToken,
+        defaultProductLimit,
+        skipImageValidation,
+        autoImportEnabled,
+        importSchedule,
+        emailNotifications,
+        notificationEmail,
+        showToast,
+        fetchSettings
+    ]);
 
     // 获取状态徽章
     const getStatusBadge = (status: string) => {
@@ -251,18 +310,22 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                     <Card>
                         <BlockStack gap="400">
                             <Text as="h2" variant="headingMd">API Settings</Text>
-                            
+
                             {/* CJ API 设置 */}
                             <Form onSubmit={() => handleSaveSettings('API')}>
                                 <FormLayout>
                                     <Text as="h3" variant="headingMd">CJ (Commission Junction) API</Text>
-                                    
+
                                     {settings?.cj.configured && (
                                         <Banner tone="success">
                                             <p>CJ API is currently configured with Company ID: {settings.cj.companyId}</p>
                                         </Banner>
                                     )}
-                                    
+
+                                    <Banner tone="info">
+                                        <p>For security reasons, existing API credentials are not displayed. Enter new credentials to update them.</p>
+                                    </Banner>
+
                                     <FormLayout.Group>
                                         <TextField
                                             label="API Token"
@@ -280,8 +343,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                                             autoComplete="off"
                                         />
                                     </FormLayout.Group>
-                                    
-                                    <Button 
+
+                                    <Button
                                         onClick={handleTestCjConnection}
                                         loading={testingConnection === 'cj'}
                                         disabled={!cjApiToken || !cjCompanyId}
@@ -293,13 +356,13 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
 
                                     {/* Pepperjam API 设置 */}
                                     <Text as="h3" variant="headingMd">Pepperjam API</Text>
-                                    
+
                                     {settings?.pepperjam.configured && (
                                         <Banner tone="success">
                                             <p>Pepperjam API is currently configured</p>
                                         </Banner>
                                     )}
-                                    
+
                                     <TextField
                                         label="API Key"
                                         value={pepperjamApiKey}
@@ -308,8 +371,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                                         placeholder="Enter Pepperjam API Key"
                                         autoComplete="off"
                                     />
-                                    
-                                    <Button 
+
+                                    <Button
                                         onClick={handleTestPepperjamConnection}
                                         loading={testingConnection === 'pepperjam'}
                                         disabled={!pepperjamApiKey}
@@ -317,9 +380,9 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                                         Test Pepperjam Connection
                                     </Button>
 
-                                    <Button 
-                                        variant="primary" 
-                                        icon={SaveIcon} 
+                                    <Button
+                                        variant="primary"
+                                        icon={SaveIcon}
                                         loading={savingSettings}
                                         onClick={() => handleSaveSettings('API')}
                                     >
@@ -368,15 +431,15 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                                     />
 
                                     <InlineStack gap="300">
-                                        <Button 
+                                        <Button
                                             onClick={handleTestShopifyConnection}
                                             loading={testingConnection === 'shopify'}
                                             disabled={!shopifyStoreUrl || !shopifyAccessToken}
                                         >
                                             Test Shopify Connection
                                         </Button>
-                                        <Button 
-                                            variant="primary" 
+                                        <Button
+                                            variant="primary"
                                             icon={SaveIcon}
                                             loading={savingSettings}
                                             onClick={() => handleSaveSettings('Shopify')}
@@ -435,8 +498,8 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                                         />
                                     )}
 
-                                    <Button 
-                                        variant="primary" 
+                                    <Button
+                                        variant="primary"
                                         icon={SaveIcon}
                                         loading={savingSettings}
                                         onClick={() => handleSaveSettings('Import')}
@@ -473,7 +536,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                                     />
                                 )}
 
-                                <Button 
+                                <Button
                                     variant="primary"
                                     loading={savingSettings}
                                     onClick={() => handleSaveSettings('Notification')}
@@ -495,7 +558,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                                     Refresh Status
                                 </Button>
                             </InlineStack>
-                            
+
                             <BlockStack gap="300">
                                 <InlineStack align="space-between">
                                     <Text as="span" variant="bodyMd">Database Connection</Text>

@@ -94,6 +94,8 @@ export interface CJFetchParams {
     advertiserId: string;
     keywords?: string[];
     limit?: number;
+    offset?: number;
+    maxPages?: number;
 }
 
 // Pepperjam API 类型

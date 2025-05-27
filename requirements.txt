@@ -4,4 +4,4 @@ python-dotenv==1.0.0
 ShopifyAPI==12.7.0
 six==1.17.0
 urllib3==2.4.0
-loguru 
+loguru==0.7.3

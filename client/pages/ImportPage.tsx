@@ -302,7 +302,7 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
 
     // 生成搜索结果表格行
     const searchResultRows = searchResults.map((product) => [
-        <InlineStack gap="300" align="center">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minHeight: '80px', minWidth: '350px' }}>
             <Checkbox
                 label=""
                 labelHidden
@@ -314,19 +314,68 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                 alt={product.title}
                 size="small"
             />
-            <BlockStack gap="100">
-                <Text as="span" variant="bodyMd" fontWeight="semibold">{product.title}</Text>
-                <Text as="span" variant="bodySm" tone="subdued">
-                    {product.description ? product.description.substring(0, 50) + '...' : 'No description'}
-                </Text>
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                    fontWeight: 600,
+                    fontSize: '14px',
+                    lineHeight: '18px',
+                    marginBottom: '4px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    display: '-webkit-box',
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: 'vertical',
+                    maxHeight: '36px'
+                }}>
+                    {product.title}
+                </div>
+                <div style={{
+                    fontSize: '12px',
+                    color: '#6B7280',
+                    marginBottom: '2px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    display: '-webkit-box',
+                    WebkitLineClamp: 1,
+                    WebkitBoxOrient: 'vertical',
+                    maxHeight: '16px'
+                }}>
+                    {product.description ? product.description.substring(0, 60) + '...' : 'No description'}
+                </div>
                 {product.sku && (
-                    <Text as="span" variant="bodySm" tone="subdued">SKU: {product.sku}</Text>
+                    <div style={{
+                        fontSize: '12px',
+                        color: '#6B7280',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap'
+                    }}>
+                        SKU: {product.sku}
+                    </div>
                 )}
-            </BlockStack>
-        </InlineStack>,
-        formatPrice(product.price, product.currency),
-        getAvailabilityBadge(product.availability),
-        product.categories.length > 0 ? product.categories.slice(0, 2).join(', ') : 'No categories',
+            </div>
+        </div>,
+        <div style={{ minHeight: '80px', display: 'flex', alignItems: 'center', minWidth: '100px' }}>
+            <div style={{ fontWeight: 600, fontSize: '14px' }}>
+                {formatPrice(product.price, product.currency)}
+            </div>
+        </div>,
+        <div style={{ minHeight: '80px', display: 'flex', alignItems: 'center', minWidth: '100px' }}>
+            {getAvailabilityBadge(product.availability)}
+        </div>,
+        <div style={{ minHeight: '80px', display: 'flex', alignItems: 'center', minWidth: '150px' }}>
+            <div style={{
+                fontSize: '12px',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+                maxHeight: '32px'
+            }}>
+                {product.categories.length > 0 ? product.categories.slice(0, 3).join(', ') : 'No categories'}
+            </div>
+        </div>,
     ]);
 
     if (loadingBrands) {
@@ -457,11 +506,14 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                                     </BlockStack>
                                 )}
 
-                                <DataTable
-                                    columnContentTypes={['text', 'text', 'text', 'text']}
-                                    headings={['Product', 'Price', 'Stock Status', 'Categories']}
-                                    rows={searchResultRows}
-                                />
+                                <div style={{ overflowX: 'auto' }}>
+                                    <DataTable
+                                        columnContentTypes={['text', 'numeric', 'text', 'text']}
+                                        headings={['Product', 'Price', 'Stock Status', 'Categories']}
+                                        rows={searchResultRows}
+                                        truncate
+                                    />
+                                </div>
                             </BlockStack>
                         </Card>
                     </Layout.Section>

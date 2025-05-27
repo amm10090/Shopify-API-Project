@@ -182,9 +182,23 @@ export const ProductCard: React.FC<ProductCardProps> = ({
 
                         {/* 关键词匹配 */}
                         {product.keywordsMatched && product.keywordsMatched.length > 0 && (
-                            <Text as="p" variant="bodySm" tone="success">
-                                匹配关键词: {product.keywordsMatched.join(', ')}
-                            </Text>
+                            <BlockStack gap="100">
+                                <Text as="p" variant="bodySm" tone="subdued">
+                                    匹配关键词:
+                                </Text>
+                                <InlineStack gap="100" wrap>
+                                    {product.keywordsMatched.slice(0, 3).map((keyword, index) => (
+                                        <Badge key={index} tone="info" size="small">
+                                            {keyword}
+                                        </Badge>
+                                    ))}
+                                    {product.keywordsMatched.length > 3 && (
+                                        <Text as="span" variant="bodySm" tone="subdued">
+                                            +{product.keywordsMatched.length - 3} more
+                                        </Text>
+                                    )}
+                                </InlineStack>
+                            </BlockStack>
                         )}
 
                         {/* SKU */}

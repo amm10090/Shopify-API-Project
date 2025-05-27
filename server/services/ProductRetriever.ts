@@ -1,6 +1,7 @@
 import axios, { AxiosResponse } from 'axios';
 import { logger } from '../utils/logger';
 import { UnifiedProduct, CJProduct, PepperjamProduct, CJFetchParams, PepperjamFetchParams } from '@shared/types';
+import { cjApiLimitChecker, pepperjamApiLimitChecker } from '../config/apiLimits';
 
 export class ProductRetriever {
     private skipImageValidation: boolean;
@@ -9,6 +10,29 @@ export class ProductRetriever {
     constructor(skipImageValidation: boolean = false) {
         this.skipImageValidation = skipImageValidation;
         logger.info(`ProductRetriever initialized: skipImageValidation=${skipImageValidation}`);
+
+        // 检查环境变量配置
+        this.checkEnvironmentVariables();
+    }
+
+    /**
+     * 检查必要的环境变量是否配置
+     */
+    private checkEnvironmentVariables(): void {
+        const cjConfigured = !!(process.env.CJ_API_TOKEN && (process.env.CJ_CID || process.env.BRAND_CID));
+        const pepperjamConfigured = !!(process.env.ASCEND_API_KEY || process.env.PEPPERJAM_API_KEY);
+
+        logger.info(`API Configuration Status:`);
+        logger.info(`- CJ API: ${cjConfigured ? 'Configured' : 'Missing credentials'}`);
+        logger.info(`- Pepperjam API: ${pepperjamConfigured ? 'Configured' : 'Missing credentials'}`);
+
+        if (!cjConfigured) {
+            logger.warn(`CJ API not properly configured. Missing: ${!process.env.CJ_API_TOKEN ? 'CJ_API_TOKEN ' : ''}${!(process.env.CJ_CID || process.env.BRAND_CID) ? 'CJ_CID/BRAND_CID' : ''}`);
+        }
+
+        if (!pepperjamConfigured) {
+            logger.warn(`Pepperjam API not properly configured. Missing: ASCEND_API_KEY/PEPPERJAM_API_KEY`);
+        }
     }
 
     /**
@@ -192,69 +216,146 @@ export class ProductRetriever {
      * 从CJ API获取产品
      */
     async fetchCJProducts(params: CJFetchParams): Promise<UnifiedProduct[]> {
-        const { advertiserId, keywords = [], limit = 70 } = params;
+        const { advertiserId, keywords = [], limit = 70, offset = 0, maxPages = 10 } = params;
 
-        logger.info(`Fetching CJ products for advertiser ${advertiserId}, keywords: [${keywords.join(', ')}], limit: ${limit}`);
+        logger.info(`Fetching CJ products for advertiser ${advertiserId}, keywords: [${keywords.join(', ')}], limit: ${limit}, offset: ${offset}`);
 
         const unifiedProducts: UnifiedProduct[] = [];
 
         try {
             // 使用正确的CJ GraphQL API端点
             const apiUrl = 'https://ads.api.cj.com/query';
-            const fetchLimit = Math.max(limit * 5, this.maxRawProductsToScan + 10);
 
-            // 构建GraphQL查询 - 修复字段查询问题
-            const query = `
-                {
-                    products(companyId: "${process.env.CJ_CID || process.env.BRAND_CID}", partnerIds: ["${advertiserId}"], limit: ${fetchLimit}) {
-                        totalCount
-                        count
-                        resultList {
-                            advertiserId
-                            advertiserName
-                            id
-                            title
-                            description
-                            price {
-                                amount
-                                currency
-                            }
-                            imageLink
-                            link
-                            brand
-                            lastUpdated
-                            ... on Shopping {
-                                availability
-                                productType
-                                googleProductCategory {
-                                    id
-                                    name
-                                }
-                            }
-                        }
-                    }
+            // 获取Company ID，优先使用CJ_CID，然后BRAND_CID，最后使用默认值
+            const companyId = process.env.CJ_CID || process.env.BRAND_CID || '7520009';
+            logger.debug(`Using CJ Company ID: ${companyId}`);
+
+            // 使用API限制检查器计算分页策略
+            const totalToFetch = Math.max(limit * 3, this.maxRawProductsToScan); // 获取更多原始数据以便过滤
+            const paginationPlan = cjApiLimitChecker.calculatePagination(totalToFetch, offset);
+
+            logger.debug(`CJ API pagination plan: ${paginationPlan.totalPages} pages, estimated total: ${paginationPlan.estimatedTotal}`);
+
+            let allProducts: any[] = [];
+            let pageCount = 0;
+
+            // 分页获取数据
+            for (const page of paginationPlan.pages) {
+                if (pageCount >= maxPages) {
+                    logger.info(`Reached maximum pages limit (${maxPages}), stopping pagination`);
+                    break;
                 }
-            `;
 
-            const response = await axios.post(apiUrl,
-                { query },
-                {
-                    headers: {
-                        'Authorization': `Bearer ${process.env.CJ_API_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    }
+                // 验证请求参数
+                const validation = cjApiLimitChecker.validateRequest(page.limit, page.offset);
+                if (!validation.valid) {
+                    logger.warn(`Invalid request parameters: ${validation.message}`);
+                    break;
                 }
-            );
 
-            if (response.data?.data?.products?.resultList?.length) {
-                const products = response.data.data.products.resultList;
+                if (validation.message) {
+                    logger.info(`API limit adjustment: ${validation.message}`);
+                }
+
+                const currentLimit = validation.adjustedLimit;
+
+                // 构建GraphQL查询 - 使用offset和limit进行分页
+                const query = `
+                     {
+                         products(
+                             companyId: "${companyId}", 
+                             partnerIds: ["${advertiserId}"], 
+                             limit: ${currentLimit},
+                             offset: ${page.offset}
+                         ) {
+                             totalCount
+                             count
+                             resultList {
+                                 advertiserId
+                                 advertiserName
+                                 id
+                                 title
+                                 description
+                                 price {
+                                     amount
+                                     currency
+                                 }
+                                 imageLink
+                                 link
+                                 brand
+                                 lastUpdated
+                                 ... on Shopping {
+                                     availability
+                                     productType
+                                     googleProductCategory {
+                                         id
+                                         name
+                                     }
+                                 }
+                             }
+                         }
+                     }
+                 `;
+
+                logger.debug(`CJ API request page ${pageCount + 1}: offset=${page.offset}, limit=${currentLimit}`);
+                logger.debug(`CJ API query:`, query);
+
+                const response = await axios.post(apiUrl,
+                    { query },
+                    {
+                        headers: {
+                            'Authorization': `Bearer ${process.env.CJ_API_TOKEN}`,
+                            'Content-Type': 'application/json'
+                        },
+                        timeout: cjApiLimitChecker.getTimeout()
+                    }
+                );
+
+                logger.debug(`CJ API response status: ${response.status}`);
+
+                if (response.data?.errors) {
+                    logger.error(`CJ API returned errors:`, response.data.errors);
+                    break;
+                }
+
+                const products = response.data?.data?.products?.resultList || [];
+                const totalCount = response.data?.data?.products?.totalCount || 0;
+                const returnedCount = response.data?.data?.products?.count || 0;
+
+                logger.debug(`CJ API page response: returned ${products.length} products, total available: ${totalCount}`);
+
+                if (products.length === 0) {
+                    logger.info(`No more products available from CJ API`);
+                    break;
+                }
+
+                // 添加到总结果中
+                allProducts.push(...products);
+                pageCount++;
+
+                // 检查是否还有更多数据
+                if (products.length < currentLimit) {
+                    logger.info(`Received fewer products than requested, likely reached end of data`);
+                    break;
+                }
+
+                // 添加延迟以避免API限制
+                if (pageCount < paginationPlan.totalPages && pageCount < maxPages) {
+                    await new Promise(resolve => setTimeout(resolve, cjApiLimitChecker.getRequestDelay()));
+                }
+            }
+
+            logger.info(`CJ API total fetched: ${allProducts.length} products from ${pageCount} pages`);
+
+            // 处理和过滤产品
+            if (allProducts.length > 0) {
                 let count = 0;
                 let skippedKeywordMismatch = 0;
                 let skippedNoData = 0;
                 let skippedInvalidImage = 0;
                 let skippedOtherReasons = 0;
 
-                for (const cjProduct of products) {
+                for (const cjProduct of allProducts) {
                     if (count >= limit) break;
 
                     // 关键词过滤（OR逻辑）
@@ -309,17 +410,23 @@ export class ProductRetriever {
                     }
                 }
 
-                logger.info(`CJ product stats - API fetched: ${products.length}, converted: ${unifiedProducts.length}, ` +
+                logger.info(`CJ product processing stats - API fetched: ${allProducts.length}, converted: ${unifiedProducts.length}, ` +
                     `skipped (keyword mismatch): ${skippedKeywordMismatch}, ` +
                     `skipped (missing data): ${skippedNoData}, ` +
                     `skipped (invalid image): ${skippedInvalidImage}, ` +
                     `skipped (other): ${skippedOtherReasons}`);
             } else {
-                const errorInfo = response.data?.errors || 'No products returned';
-                logger.warn(`No products returned from CJ API for advertiser ${advertiserId}. Error: ${JSON.stringify(errorInfo)}`);
+                logger.warn(`No products returned from CJ API for advertiser ${advertiserId}`);
             }
-        } catch (error) {
+        } catch (error: any) {
             logger.error(`Error fetching CJ products for advertiser ${advertiserId}:`, error);
+
+            // 如果是API限制错误，提供更详细的信息
+            if (error.response?.status === 429) {
+                logger.error(`CJ API rate limit exceeded. Please wait before making more requests.`);
+            } else if (error.response?.status === 400) {
+                logger.error(`CJ API bad request. Check query parameters and limits.`);
+            }
         }
 
         logger.info(`Fetched and converted ${unifiedProducts.length} products from CJ`);
@@ -426,18 +533,34 @@ export class ProductRetriever {
 
         for (const keyword of apiCallKeywords) {
             try {
-                const apiUrl = 'https://api.pepperjamnetwork.com/20120402/publisher/product/creatives';
+                const apiUrl = 'https://api.pepperjamnetwork.com/20120402/publisher/creative/product';
+                const params: any = {
+                    apiKey: process.env.ASCEND_API_KEY || process.env.PEPPERJAM_API_KEY,
+                    format: 'json',
+                    programIds: programId,
+                    page: 1,
+                    limit: 50
+                };
+
+                if (keyword) {
+                    params.keywords = keyword;
+                }
+
+                logger.debug(`Pepperjam API call: ${apiUrl} with params:`, params);
+
                 const response = await axios.get(apiUrl, {
-                    headers: {
-                        'Authorization': `Bearer ${process.env.ASCEND_API_KEY}`,
-                        'Content-Type': 'application/json'
-                    },
-                    params: {
-                        program_ids: programId,
-                        keywords: keyword,
-                        page: 1,
-                        limit: 50
-                    }
+                    params,
+                    timeout: 30000
+                });
+
+                logger.debug(`Pepperjam API response status: ${response.status}`);
+                logger.debug(`Pepperjam API response structure:`, {
+                    hasData: !!response.data,
+                    hasMeta: !!response.data?.meta,
+                    hasStatus: !!response.data?.meta?.status,
+                    statusCode: response.data?.meta?.status?.code,
+                    hasDataArray: !!response.data?.data,
+                    dataLength: response.data?.data?.length || 0
                 });
 
                 if (response.data?.meta?.status?.code === 200 && response.data.data) {
