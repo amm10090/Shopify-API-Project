@@ -4,7 +4,7 @@ name = "Product Importer"
 client_id = "22c17ecd1ecf677dc1c78552e650bd34"
 handle = "product-importer-66"
 include_config_on_deploy = true
-application_url = "https://boston-lisa-confidence-wed.trycloudflare.com"
+application_url = "https://recruiting-diffs-colony-bulgarian.trycloudflare.com"
 embedded = true
 
 [build]
@@ -22,9 +22,9 @@ scopes = "read_products,write_products,read_inventory,write_inventory,read_produ
 
 [auth]
 redirect_urls = [
-  "https://boston-lisa-confidence-wed.trycloudflare.com/auth/callback",
-  "https://boston-lisa-confidence-wed.trycloudflare.com/auth/shopify/callback",
-  "https://boston-lisa-confidence-wed.trycloudflare.com/api/auth/callback"
+  "https://recruiting-diffs-colony-bulgarian.trycloudflare.com/auth/callback",
+  "https://recruiting-diffs-colony-bulgarian.trycloudflare.com/auth/shopify/callback",
+  "https://recruiting-diffs-colony-bulgarian.trycloudflare.com/api/auth/callback"
 ]
 
 [webhooks]
@@ -46,6 +46,6 @@ api_version = "2024-07"
 embedded = false
 
 [app_proxy]
-url = "https://boston-lisa-confidence-wed.trycloudflare.com:8443/apps/product-importer"
+url = "https://recruiting-diffs-colony-bulgarian.trycloudflare.com:8443/apps/product-importer"
 subpath = "proxy"
 prefix = "apps"
