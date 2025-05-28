@@ -100,23 +100,27 @@ async function main() {
     const processes = [];
 
     // 1. 启动后端服务器（现在同时处理前端和后端）
-    processes.push(startProcess(
+    const serverProcess = startProcess(
         'Server',
         'npx',
         ['tsx', 'watch', '--env-file=.env', 'server/index.ts'],
         'green'
-    ));
+    );
+    processes.push(serverProcess);
 
     // 等待一下让服务器启动
     await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // 2. 启动 HTTPS 代理
-    processes.push(startProcess(
+    // 2. 启动 HTTPS 代理，传递后端端口
+    const proxyProcess = startProcess(
         'Proxy',
         'node',
         ['simple-https-proxy.js'],
         'magenta'
-    ));
+    );
+    // 设置代理的环境变量
+    proxyProcess.env = { ...process.env, BACKEND_PORT: '3000' };
+    processes.push(proxyProcess);
 
     // 优雅关闭
     process.on('SIGINT', () => {

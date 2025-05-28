@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
 import { useAppBridge } from '@shopify/app-bridge-react';
 import { authenticatedFetch } from '@shopify/app-bridge/utilities';
 
@@ -121,7 +121,11 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     };
 
     // 初始化用户状态
+    const initialized = useRef(false);
+
     useEffect(() => {
+        if (initialized.current) return;
+
         const initializeAuth = async () => {
             try {
                 setState(prev => ({ ...prev, isLoading: true }));
@@ -145,8 +149,10 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
                             name: 'Custom App User',
                             email: 'custom@app.local',
                             shopDomain: shop
-                        }
+                        },
+                        isLoading: false
                     }));
+                    initialized.current = true;
                     return;
                 }
 
@@ -159,8 +165,9 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
                     const shop = urlParams.get('shop');
                     const host = urlParams.get('host');
 
-                    if (shop && !state.isAuthenticated) {
+                    if (shop) {
                         // 重定向到Shopify认证
+                        console.log('Redirecting to Shopify auth for shop:', shop);
                         window.location.href = `/auth/shopify?shop=${shop}&host=${host || ''}`;
                         return;
                     }
@@ -168,22 +175,27 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
 
                 // 检查本地存储中的用户信息（作为备选）
                 const savedUser = localStorage.getItem('user');
-                if (savedUser && !state.user) {
+                if (savedUser) {
                     const user = JSON.parse(savedUser);
                     setState(prev => ({
                         ...prev,
                         user,
+                        isLoading: false
                     }));
+                } else {
+                    setState(prev => ({ ...prev, isLoading: false }));
                 }
+
+                initialized.current = true;
             } catch (error) {
                 console.error('初始化认证失败:', error);
-            } finally {
                 setState(prev => ({ ...prev, isLoading: false }));
+                initialized.current = true;
             }
         };
 
         initializeAuth();
-    }, [isCustomApp]);
+    }, []); // 空依赖数组，只在组件挂载时执行一次
 
     // 定义操作函数
     const actions: AppActions = {

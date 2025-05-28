@@ -164,9 +164,9 @@ const getShopifyConfig = () => {
   }
 
   // 清理占位符
-  if (shop === '%SHOP%') shop = ''
-  if (host === '%HOST%') host = ''
-  if (finalApiKey === '%SHOPIFY_API_KEY%') finalApiKey = ''
+  if (shop === '%SHOP%' || shop === '') shop = ''
+  if (host === '%HOST%' || host === '') host = ''
+  if (finalApiKey === '%SHOPIFY_API_KEY%' || finalApiKey === '') finalApiKey = ''
 
   console.log('Processed values:', {
     apiKey: finalApiKey ? '***' : 'missing',
@@ -178,17 +178,18 @@ const getShopifyConfig = () => {
   // 检查是否在开发环境
   const isDevelopment = process.env.NODE_ENV === 'development' ||
     window.location.hostname === 'localhost' ||
-    window.location.hostname === '127.0.0.1'
+    window.location.hostname === '127.0.0.1' ||
+    window.location.hostname === '69.62.86.176'
 
   console.log('Is development:', isDevelopment);
 
   if (isDevelopment) {
-    // Use fake data for development environment
+    // 如果是开发环境且缺少配置，使用假数据
     console.log('Using development configuration');
     return {
       apiKey: finalApiKey || 'dev-api-key',
-      shop: shop || 'dev-shop.myshopify.com',
-      host: host || btoa('dev-shop.myshopify.com/admin'),
+      shop: shop || 'amm10090.myshopify.com',
+      host: host || btoa('amm10090.myshopify.com/admin'),
       forceRedirect: false
     }
   }

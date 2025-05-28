@@ -50,5 +50,12 @@ export default defineConfig(({ mode }) => ({
         // 确保环境变量在客户端可用
         'process.env.SHOPIFY_API_KEY': JSON.stringify(process.env.SHOPIFY_API_KEY),
         'process.env.NODE_ENV': JSON.stringify(mode),
+        // 确保global可用
+        global: 'globalThis',
+    },
+    esbuild: {
+        // 在开发模式下使用jsxDev，生产模式下使用jsx
+        jsx: mode === 'development' ? 'automatic' : 'automatic',
+        jsxDev: mode === 'development',
     },
 })) 

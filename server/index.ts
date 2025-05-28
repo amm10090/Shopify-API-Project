@@ -33,32 +33,33 @@ import { logger } from './utils/logger';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+// 强制使用3000端口，忽略Shopify CLI的随机端口分配
+const PORT = 3000;
 
 // Initialize database
 export const prisma = new PrismaClient();
 
-// Middleware
+// Middleware - 更宽松的安全策略以支持 Shopify App Bridge
 app.use(helmet({
     contentSecurityPolicy: {
         directives: {
-            defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.shopify.com", "https://shopifycloud.com"],
+            defaultSrc: ["'self'", "https:", "wss:", "ws:"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.shopify.com", "https://*.shopifycloud.com", "https:"],
             styleSrc: ["'self'", "'unsafe-inline'", "https:", "https://cdn.shopify.com"],
-            imgSrc: ["'self'", "data:", "https:"],
-            connectSrc: ["'self'", "https:", "wss:", "ws:"],
+            imgSrc: ["'self'", "data:", "https:", "blob:"],
+            connectSrc: ["'self'", "https:", "wss:", "ws:", "https://*.shopifycloud.com", "https://*.shopify.com"],
             fontSrc: ["'self'", "https:", "data:"],
             objectSrc: ["'none'"],
-            mediaSrc: ["'self'"],
-            frameSrc: ["'self'", "https://*.myshopify.com", "https://admin.shopify.com"],
-            frameAncestors: ["https://*.myshopify.com", "https://admin.shopify.com"],
+            mediaSrc: ["'self'", "https:"],
+            frameSrc: ["'self'", "https://*.myshopify.com", "https://admin.shopify.com", "https:"],
+            frameAncestors: ["https://*.myshopify.com", "https://admin.shopify.com", "'self'"],
             upgradeInsecureRequests: null,
         },
     },
     hsts: false,
     crossOriginOpenerPolicy: false,
     originAgentCluster: false,
-    // 允许在 iframe 中嵌入
+    // 允许在 iframe 中嵌入 - 完全禁用 frameguard
     frameguard: false,
 }));
 
@@ -146,13 +147,22 @@ app.get('*', (req, res) => {
 
     // 读取并处理index.html模板
     try {
-        const fs = require('fs');
         let html = fs.readFileSync(indexPath, 'utf8');
 
         // 从查询参数获取Shopify必需的参数
         let shop = req.query.shop as string || '';
         const host = req.query.host as string || '';
         const embedded = req.query.embedded !== '0'; // 默认为嵌入式
+
+        // 检查是否有必需的环境变量
+        const apiKey = process.env.SHOPIFY_API_KEY || '';
+        const appType = process.env.SHOPIFY_APP_TYPE || 'oauth';
+
+        // 对于自定义应用，如果没有shop参数，使用环境变量中的默认值
+        if (!shop && appType === 'custom') {
+            shop = process.env.SHOPIFY_STORE_NAME || 'custom-app-store.myshopify.com';
+            logger.info(`Using default shop for custom app: ${shop}`);
+        }
 
         // 验证和修正shop参数格式
         if (shop && !shop.includes('.myshopify.com')) {
@@ -182,20 +192,16 @@ app.get('*', (req, res) => {
             logger.warn('No host parameter provided - this may cause App Bridge issues');
         }
 
-        // 检查是否有必需的环境变量
-        const apiKey = process.env.SHOPIFY_API_KEY || '';
-        const appType = process.env.SHOPIFY_APP_TYPE || 'oauth';
-
         // 对于自定义应用，不需要严格的 API Key 验证
         if (appType !== 'custom' && !apiKey) {
             logger.error('SHOPIFY_API_KEY environment variable is not set');
         }
 
-        // 替换模板变量
-        html = html.replace('%SHOPIFY_API_KEY%', apiKey);
-        html = html.replace('%SHOP%', shop);
-        html = html.replace('%HOST%', validHost);
-        html = html.replace('%EMBEDDED%', embedded.toString());
+        // 替换模板变量 - 使用全局替换
+        html = html.replace(/%SHOPIFY_API_KEY%/g, apiKey);
+        html = html.replace(/%SHOP%/g, shop);
+        html = html.replace(/%HOST%/g, validHost);
+        html = html.replace(/%EMBEDDED%/g, embedded.toString());
 
         // 注入配置脚本
         const configScript = `
@@ -239,9 +245,10 @@ async function startServer() {
         await prisma.$connect();
         logger.info('Connected to database');
 
-        app.listen(PORT, () => {
+        app.listen(PORT, '0.0.0.0', () => {
             logger.info(`Server running on port ${PORT}`);
             logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+            logger.info(`Access URL: http://69.62.86.176:${PORT}`);
 
             if (process.env.NODE_ENV === 'production') {
                 logger.info('Serving static files from dist/client');

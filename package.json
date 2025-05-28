@@ -10,6 +10,8 @@
         "dev:client": "vite --port 5173",
         "dev:proxy": "node simple-https-proxy.js",
         "dev:shopify": "shopify app dev",
+        "restart": "chmod +x scripts/restart-services.sh && ./scripts/restart-services.sh",
+        "stop": "chmod +x scripts/stop-services.sh && ./scripts/stop-services.sh",
         "// === 构建 ===": "",
         "build": "node scripts/build.js",
         "build:shared": "tsc -p shared/tsconfig.json",
@@ -63,7 +65,6 @@
         "module-alias": "^2.2.3",
         "node-cron": "^4.0.7",
         "prisma": "^6.8.2",
-
         "winston": "^3.11.0",
         "zod": "^3.22.4"
     },
