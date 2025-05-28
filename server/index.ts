@@ -13,6 +13,7 @@ import helmet from 'helmet';
 import dotenv from 'dotenv';
 import path from 'path';
 import { PrismaClient } from '@prisma/client';
+import fs from 'fs';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -42,14 +43,14 @@ app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.shopify.com"],
-            styleSrc: ["'self'", "'unsafe-inline'", "https:"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.shopify.com", "https://shopifycloud.com"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https:", "https://cdn.shopify.com"],
             imgSrc: ["'self'", "data:", "https:"],
-            connectSrc: ["'self'", "https:"],
+            connectSrc: ["'self'", "https:", "wss:", "ws:"],
             fontSrc: ["'self'", "https:", "data:"],
             objectSrc: ["'none'"],
             mediaSrc: ["'self'"],
-            frameSrc: ["'self'"],
+            frameSrc: ["'self'", "https://*.myshopify.com", "https://admin.shopify.com"],
             frameAncestors: ["https://*.myshopify.com", "https://admin.shopify.com"],
             upgradeInsecureRequests: null,
         },
@@ -57,6 +58,8 @@ app.use(helmet({
     hsts: false,
     crossOriginOpenerPolicy: false,
     originAgentCluster: false,
+    // 允许在 iframe 中嵌入
+    frameguard: false,
 }));
 
 app.use(cors({
@@ -111,129 +114,120 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/webhooks', webhookRoutes);
 
-// 在生产环境中提供静态文件
-if (process.env.NODE_ENV === 'production') {
-    // Serve built frontend static files (but exclude index.html)
-    app.use(express.static(path.join(__dirname, '../client'), {
-        index: false // 不要自动返回index.html，让我们的路由处理器处理
-    }));
+// 检查是否存在构建后的前端文件
+const frontendPath = path.join(__dirname, '../client');
+const distPath = path.join(__dirname, '../dist/client');
+const indexPath = fs.existsSync(path.join(distPath, 'index.html')) ?
+    path.join(distPath, 'index.html') :
+    path.join(__dirname, '../index.html');
 
-    // For all non-API routes, return index.html (support frontend routing)
-    app.get('*', (req, res) => {
-        // 跳过API路由
-        if (req.path.startsWith('/api') || req.path.startsWith('/auth')) {
-            res.status(404).json({
-                success: false,
-                error: 'Route not found'
-            });
-            return;
-        }
+logger.info(`Using frontend path: ${frontendPath}`);
+logger.info(`Using index.html from: ${indexPath}`);
 
-        // Read and process index.html template
-        const htmlPath = path.join(__dirname, '../client/index.html');
-
-        try {
-            const fs = require('fs');
-            let html = fs.readFileSync(htmlPath, 'utf8');
-
-            // 从查询参数获取Shopify必需的参数
-            let shop = req.query.shop as string || '';
-            const host = req.query.host as string || '';
-            const embedded = req.query.embedded !== '0'; // 默认为嵌入式
-
-            // 验证和修正shop参数格式
-            if (shop && !shop.includes('.myshopify.com')) {
-                const correctedShop = shop.includes('.') ? shop : `${shop}.myshopify.com`;
-                logger.info(`Correcting shop parameter from '${shop}' to '${correctedShop}'`);
-                shop = correctedShop; // 使用修正后的值
-            }
-
-            // 验证host参数（Shopify的host必须是base64编码的）
-            let validHost = host;
-            if (host) {
-                // 检查是否已经是base64编码
-                if (!host.match(/^[A-Za-z0-9+/]+=*$/)) {
-                    logger.warn(`Host parameter '${host}' doesn't appear to be base64 encoded`);
-                    // 不要自动编码，而是记录警告
-                    // Shopify应该提供正确编码的host参数
-                } else {
-                    // 验证base64可以正确解码
-                    try {
-                        const decoded = Buffer.from(host, 'base64').toString('utf8');
-                        logger.debug(`Host parameter decoded: ${decoded}`);
-                    } catch (error) {
-                        logger.warn(`Host parameter cannot be decoded as base64: ${host}`);
-                    }
-                }
-            } else {
-                logger.warn('No host parameter provided - this may cause App Bridge issues');
-            }
-
-            // 检查是否有必需的环境变量
-            const apiKey = process.env.SHOPIFY_API_KEY || '';
-            const appType = process.env.SHOPIFY_APP_TYPE || 'oauth';
-
-            // 对于自定义应用，不需要严格的 API Key 验证
-            if (appType !== 'custom' && !apiKey) {
-                logger.error('SHOPIFY_API_KEY environment variable is not set');
-            }
-
-            // 替换模板变量
-            html = html.replace('%SHOPIFY_API_KEY%', apiKey);
-            html = html.replace('%SHOP%', shop);
-            html = html.replace('%HOST%', validHost);
-            html = html.replace('%EMBEDDED%', embedded.toString());
-
-            // 注入配置脚本
-            const configScript = `
-                <script>
-                    window.shopifyConfig = {
-                        apiKey: '${apiKey}',
-                        shop: '${shop}',
-                        host: '${validHost}',
-                        embedded: ${embedded},
-                        appType: '${appType}'
-                    };
-                    
-                    // 调试信息
-                    console.log('Server injected config:', window.shopifyConfig);
-                    console.log('Request URL:', '${req.url}');
-                    console.log('Query params:', ${JSON.stringify(req.query)});
-                </script>
-            `;
-
-            // 在head标签结束前插入配置脚本
-            html = html.replace('</head>', `${configScript}</head>`);
-
-            logger.info(`Serving app with config: shop=${shop}, host=${validHost ? '***' : 'missing'}, embedded=${embedded}, apiKey=${apiKey ? '***' : 'missing'}`);
-
-            res.setHeader('Content-Type', 'text/html');
-            res.setHeader('X-Frame-Options', 'ALLOWALL');
-            res.send(html);
-        } catch (error) {
-            logger.error('Error serving index.html:', error);
-            res.status(500).send('Internal Server Error');
-        }
-    });
+// 提供静态文件 (优先使用构建后的文件，否则使用源文件)
+if (fs.existsSync(distPath)) {
+    app.use(express.static(distPath, { index: false }));
+    logger.info('Serving static files from dist/client');
 } else {
-    // 开发环境的404处理
-    app.get('*', (req, res) => {
-        // 跳过API路由
-        if (req.path.startsWith('/api') || req.path.startsWith('/auth')) {
-            res.status(404).json({
-                success: false,
-                error: 'Route not found'
-            });
-            return;
-        }
+    app.use(express.static(path.join(__dirname, '../'), { index: false }));
+    logger.info('Serving static files from project root');
+}
 
-        // 在开发环境中，Vite会处理这个路由
+// 对于所有非API路由，返回index.html (支持前端路由)
+app.get('*', (req, res) => {
+    // 跳过API路由
+    if (req.path.startsWith('/api') || req.path.startsWith('/auth') || req.path.startsWith('/webhooks')) {
         res.status(404).json({
             success: false,
-            error: 'Route not found - use Vite dev server for frontend'
+            error: 'API route not found'
         });
-    });
-}
+        return;
+    }
+
+    // 读取并处理index.html模板
+    try {
+        const fs = require('fs');
+        let html = fs.readFileSync(indexPath, 'utf8');
+
+        // 从查询参数获取Shopify必需的参数
+        let shop = req.query.shop as string || '';
+        const host = req.query.host as string || '';
+        const embedded = req.query.embedded !== '0'; // 默认为嵌入式
+
+        // 验证和修正shop参数格式
+        if (shop && !shop.includes('.myshopify.com')) {
+            const correctedShop = shop.includes('.') ? shop : `${shop}.myshopify.com`;
+            logger.info(`Correcting shop parameter from '${shop}' to '${correctedShop}'`);
+            shop = correctedShop; // 使用修正后的值
+        }
+
+        // 验证host参数（Shopify的host必须是base64编码的）
+        let validHost = host;
+        if (host) {
+            // 检查是否已经是base64编码
+            if (!host.match(/^[A-Za-z0-9+/]+=*$/)) {
+                logger.warn(`Host parameter '${host}' doesn't appear to be base64 encoded`);
+                // 不要自动编码，而是记录警告
+                // Shopify应该提供正确编码的host参数
+            } else {
+                // 验证base64可以正确解码
+                try {
+                    const decoded = Buffer.from(host, 'base64').toString('utf8');
+                    logger.debug(`Host parameter decoded: ${decoded}`);
+                } catch (error) {
+                    logger.warn(`Host parameter cannot be decoded as base64: ${host}`);
+                }
+            }
+        } else {
+            logger.warn('No host parameter provided - this may cause App Bridge issues');
+        }
+
+        // 检查是否有必需的环境变量
+        const apiKey = process.env.SHOPIFY_API_KEY || '';
+        const appType = process.env.SHOPIFY_APP_TYPE || 'oauth';
+
+        // 对于自定义应用，不需要严格的 API Key 验证
+        if (appType !== 'custom' && !apiKey) {
+            logger.error('SHOPIFY_API_KEY environment variable is not set');
+        }
+
+        // 替换模板变量
+        html = html.replace('%SHOPIFY_API_KEY%', apiKey);
+        html = html.replace('%SHOP%', shop);
+        html = html.replace('%HOST%', validHost);
+        html = html.replace('%EMBEDDED%', embedded.toString());
+
+        // 注入配置脚本
+        const configScript = `
+            <script>
+                window.shopifyConfig = {
+                    apiKey: '${apiKey}',
+                    shop: '${shop}',
+                    host: '${validHost}',
+                    embedded: ${embedded},
+                    appType: '${appType}'
+                };
+                
+                // 调试信息
+                console.log('Server injected config:', window.shopifyConfig);
+                console.log('Request URL:', '${req.url}');
+                console.log('Query params:', ${JSON.stringify(req.query)});
+            </script>
+        `;
+
+        // 在head标签结束前插入配置脚本
+        html = html.replace('</head>', `${configScript}</head>`);
+
+        logger.info(`Serving app with config: shop=${shop}, host=${validHost ? '***' : 'missing'}, embedded=${embedded}, apiKey=${apiKey ? '***' : 'missing'}`);
+
+        res.setHeader('Content-Type', 'text/html');
+        res.setHeader('X-Frame-Options', 'ALLOWALL');
+        res.send(html);
+    } catch (error) {
+        logger.error('Error serving index.html:', error);
+        res.status(500).send('Internal Server Error');
+    }
+});
 
 // 错误处理中间件
 app.use(errorHandler);

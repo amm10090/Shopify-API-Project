@@ -13,14 +13,19 @@ const sslOptions = {
 const server = https.createServer(sslOptions, (req, res) => {
   // 解析请求 URL
   const parsedUrl = url.parse(req.url);
-  
-  // 创建代理请求选项
+
+  console.log(`[Proxy] ${req.method} ${parsedUrl.path} -> Backend:3000`);
+
+  // 创建代理请求选项 - 所有请求都转发到后端
   const options = {
     hostname: 'localhost',
     port: 3000,
     path: parsedUrl.path,
     method: req.method,
-    headers: req.headers
+    headers: {
+      ...req.headers,
+      host: 'localhost:3000'
+    }
   };
 
   // 创建代理请求
@@ -33,18 +38,19 @@ const server = https.createServer(sslOptions, (req, res) => {
 
   // 错误处理
   proxyReq.on('error', (err) => {
-    console.error('Proxy request error:', err);
-    res.writeHead(500, {'Content-Type': 'text/plain'});
-    res.end('Proxy error: ' + err.message);
+    console.error(`[Proxy] Error proxying to backend:`, err.message);
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    res.end(`Proxy error: ${err.message}`);
   });
 
   // 传输请求数据
   req.pipe(proxyReq);
 });
 
-const PORT = 8443;server.listen(PORT, () => {
+const PORT = 8443;
+server.listen(PORT, () => {
   console.log(`🔒 HTTPS Proxy server running on port ${PORT}`);
-  console.log(`📡 Proxying HTTPS requests to http://localhost:3000`);
+  console.log(`📡 Proxying all requests to Backend: http://localhost:3000`);
   console.log(`🌐 Access your app at: https://69.62.86.176:${PORT}`);
 });
 

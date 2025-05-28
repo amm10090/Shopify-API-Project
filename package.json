@@ -40,8 +40,10 @@
         "test:routes": "node scripts/test-routes.js",
         "check-env": "node scripts/check-env.js",
         "// === Shopify CLI ===": "",
-        "shopify:generate": "shopify app init",
-        "shopify:deploy": "shopify app deploy"
+        "shopify:dev": "shopify app dev",
+        "shopify:generate": "shopify app generate extension",
+        "shopify:deploy": "shopify app deploy",
+        "shopify:info": "shopify app info"
     },
     "dependencies": {
         "@prisma/client": "^6.8.2",

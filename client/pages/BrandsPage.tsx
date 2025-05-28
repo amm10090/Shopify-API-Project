@@ -3,7 +3,7 @@ import {
     Page,
     Layout,
     Card,
-    DataTable,
+    IndexTable,
     Button,
     Badge,
     BlockStack,
@@ -306,32 +306,56 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ showToast, setIsLoading }) => {
         );
     }
 
-    const rows = brands.map((brand) => [
-        <BlockStack gap="100">
-            <Text as="span" variant="bodyMd" fontWeight="semibold">{brand.name}</Text>
-            <Text as="span" variant="bodySm" tone="subdued">ID: {brand.apiId}</Text>
-        </BlockStack>,
-        getApiTypeBadge(brand.apiType),
-        getStatusBadge(brand.isActive),
-        <BlockStack gap="100">
-            <Text as="span" variant="bodyMd">-- products</Text>
-            <Text as="span" variant="bodySm" tone="subdued">-- imported</Text>
-        </BlockStack>,
-        formatDate(brand.lastSync),
-        <ButtonGroup>
-            <Button size="slim" onClick={() => openEditModal(brand)}>Edit</Button>
-            <Button size="slim" onClick={() => handleSyncBrand(brand.id, brand.name)}>Sync</Button>
-            <Button size="slim">View Products</Button>
-        </ButtonGroup>
-    ]);
+    const rowMarkup = brands.map((brand, index) => (
+        <IndexTable.Row
+            id={brand.id}
+            key={brand.id}
+            selected={selectedBrands.includes(brand.id)}
+            position={index}
+        >
+            <IndexTable.Cell>
+                <BlockStack gap="100">
+                    <Text as="span" variant="bodyMd" fontWeight="semibold">{brand.name}</Text>
+                    <Text as="span" variant="bodySm" tone="subdued">ID: {brand.apiId}</Text>
+                </BlockStack>
+            </IndexTable.Cell>
+            <IndexTable.Cell>
+                {getApiTypeBadge(brand.apiType)}
+            </IndexTable.Cell>
+            <IndexTable.Cell>
+                {getStatusBadge(brand.isActive)}
+            </IndexTable.Cell>
+            <IndexTable.Cell>
+                <BlockStack gap="100">
+                    <Text as="span" variant="bodyMd">-- products</Text>
+                    <Text as="span" variant="bodySm" tone="subdued">-- imported</Text>
+                </BlockStack>
+            </IndexTable.Cell>
+            <IndexTable.Cell>
+                {formatDate(brand.lastSync)}
+            </IndexTable.Cell>
+            <IndexTable.Cell>
+                <ButtonGroup>
+                    <Button size="slim" onClick={() => openEditModal(brand)}>Edit</Button>
+                    <Button size="slim" onClick={() => handleSyncBrand(brand.id, brand.name)}>Sync</Button>
+                    <Button size="slim">View Products</Button>
+                </ButtonGroup>
+            </IndexTable.Cell>
+        </IndexTable.Row>
+    ));
 
-    const bulkActions = [
+    const promotedBulkActions = [
         {
             content: 'Delete Brands',
             destructive: true,
             onAction: () => setDeleteModalActive(true),
         },
     ];
+
+    const resourceName = {
+        singular: 'brand',
+        plural: 'brands',
+    };
 
     return (
         <Page
@@ -347,28 +371,37 @@ const BrandsPage: React.FC<BrandsPageProps> = ({ showToast, setIsLoading }) => {
             <Layout>
                 <Layout.Section>
                     <Card>
-                        <DataTable
-                            columnContentTypes={[
-                                'text',
-                                'text',
-                                'text',
-                                'text',
-                                'text',
-                                'text',
-                            ]}
+                        <IndexTable
+                            resourceName={resourceName}
+                            itemCount={brands.length}
                             headings={[
-                                'Brand Name',
-                                'API Type',
-                                'Status',
-                                'Product Statistics',
-                                'Last Sync',
-                                'Actions',
+                                { title: 'Brand Name' },
+                                { title: 'API Type' },
+                                { title: 'Status' },
+                                { title: 'Product Statistics' },
+                                { title: 'Last Sync' },
+                                { title: 'Actions' },
                             ]}
-                            rows={rows}
-                            promotedBulkActions={bulkActions}
-                            selectedItemsCount={selectedBrands.length}
-                            onSelectionChange={setSelectedBrands}
-                        />
+                            promotedBulkActions={promotedBulkActions}
+                            selectedItemsCount={
+                                selectedBrands.length === brands.length ? 'All' : selectedBrands.length
+                            }
+                            onSelectionChange={(selectionType, toggleType, selection) => {
+                                if (selectionType === 'all') {
+                                    setSelectedBrands(toggleType ? brands.map(brand => brand.id) : []);
+                                } else if (selectionType === 'page') {
+                                    setSelectedBrands(toggleType ? brands.map(brand => brand.id) : []);
+                                } else if (typeof selection === 'string') {
+                                    if (toggleType) {
+                                        setSelectedBrands(prev => [...prev, selection]);
+                                    } else {
+                                        setSelectedBrands(prev => prev.filter(id => id !== selection));
+                                    }
+                                }
+                            }}
+                        >
+                            {rowMarkup}
+                        </IndexTable>
                     </Card>
                 </Layout.Section>
             </Layout>

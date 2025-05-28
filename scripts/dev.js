@@ -99,7 +99,7 @@ async function main() {
     // 启动各个服务
     const processes = [];
 
-    // 1. 启动后端服务器
+    // 1. 启动后端服务器（现在同时处理前端和后端）
     processes.push(startProcess(
         'Server',
         'npx',
@@ -108,17 +108,9 @@ async function main() {
     ));
 
     // 等待一下让服务器启动
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // 2. 启动前端开发服务器
-    processes.push(startProcess(
-        'Client',
-        'npx',
-        ['vite', '--port', '5173'],
-        'blue'
-    ));
-
-    // 3. 启动 HTTPS 代理
+    // 2. 启动 HTTPS 代理
     processes.push(startProcess(
         'Proxy',
         'node',
@@ -141,12 +133,11 @@ async function main() {
     setTimeout(() => {
         log('\n' + '='.repeat(50), 'cyan');
         log('🌐 服务已启动:', 'bright');
-        log('   前端开发服务器: http://localhost:5173', 'blue');
-        log('   后端 API 服务器: http://localhost:3000', 'green');
+        log('   统一服务器（前端+后端）: http://localhost:3000', 'green');
         log('   HTTPS 代理: https://69.62.86.176:8443', 'magenta');
         log('\n💡 使用 Ctrl+C 停止所有服务', 'yellow');
         log('='.repeat(50), 'cyan');
-    }, 3000);
+    }, 4000);
 }
 
 main().catch(error => {
