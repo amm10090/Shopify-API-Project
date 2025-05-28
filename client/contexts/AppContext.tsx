@@ -50,10 +50,45 @@ interface AppProviderProps {
     children: ReactNode;
 }
 
+// 检测是否为自定义应用模式
+const isCustomAppMode = () => {
+    const windowConfig = (window as any).shopifyConfig || {};
+    return windowConfig.appType === 'custom' ||
+        new URLSearchParams(window.location.search).get('appType') === 'custom';
+};
+
+// 自定义应用的fetch函数（不需要App Bridge认证）
+const createCustomAppFetch = (): typeof fetch => {
+    return async (input: RequestInfo | URL, init?: RequestInit) => {
+        const headers = {
+            'Content-Type': 'application/json',
+            ...init?.headers,
+        };
+
+        return fetch(input, {
+            ...init,
+            headers,
+        });
+    };
+};
+
 // Context Provider 组件
 export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
-    const app = useAppBridge();
-    const fetch = authenticatedFetch(app);
+    // 检测应用模式
+    const isCustomApp = isCustomAppMode();
+
+    // 根据应用模式使用不同的fetch函数
+    let fetch: typeof window.fetch;
+
+    if (isCustomApp) {
+        console.log('Custom app mode detected - using standard fetch');
+        fetch = createCustomAppFetch();
+    } else {
+        console.log('OAuth app mode - using authenticated fetch');
+        // eslint-disable-next-line react-hooks/rules-of-hooks
+        const app = useAppBridge();
+        fetch = authenticatedFetch(app);
+    }
 
     const [state, setState] = useState<AppState>({
         user: null,
@@ -91,7 +126,31 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
             try {
                 setState(prev => ({ ...prev, isLoading: true }));
 
-                // 首先检查Shopify会话
+                if (isCustomApp) {
+                    // 自定义应用模式：直接设置为已认证状态
+                    console.log('Custom app mode - setting authenticated state');
+                    const windowConfig = (window as any).shopifyConfig || {};
+                    const shop = windowConfig.shop || new URLSearchParams(window.location.search).get('shop') || '';
+
+                    setState(prev => ({
+                        ...prev,
+                        isAuthenticated: true,
+                        shopifySession: {
+                            shop: shop,
+                            scope: 'custom-app',
+                            isActive: true
+                        },
+                        user: {
+                            id: 'custom-app-user',
+                            name: 'Custom App User',
+                            email: 'custom@app.local',
+                            shopDomain: shop
+                        }
+                    }));
+                    return;
+                }
+
+                // OAuth应用模式：检查Shopify会话
                 const hasValidSession = await checkShopifySession();
 
                 if (!hasValidSession) {
@@ -124,7 +183,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
         };
 
         initializeAuth();
-    }, []);
+    }, [isCustomApp]);
 
     // 定义操作函数
     const actions: AppActions = {
@@ -139,8 +198,10 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
 
         logout: async () => {
             try {
-                // 清理Shopify会话
-                await fetch('/auth/logout', { method: 'POST' });
+                // 对于OAuth应用，清理Shopify会话
+                if (!isCustomApp) {
+                    await fetch('/auth/logout', { method: 'POST' });
+                }
             } catch (error) {
                 console.error('登出失败:', error);
             }

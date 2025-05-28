@@ -3,6 +3,7 @@ import { shopifyApi, ApiVersion, Session } from '@shopify/shopify-api';
 import '@shopify/shopify-api/adapters/node';
 import { prisma } from '@server/index';
 import { logger } from '@server/utils/logger';
+import { CustomAppService } from '@server/services/CustomAppService';
 
 const router = Router();
 
@@ -10,6 +11,7 @@ const router = Router();
 const shopify = shopifyApi({
     apiKey: process.env.SHOPIFY_API_KEY!,
     apiSecretKey: process.env.SHOPIFY_API_SECRET!,
+    adminApiAccessToken: process.env.SHOPIFY_ACCESS_TOKEN,
     scopes: [
         'read_products',
         'write_products',
@@ -22,7 +24,7 @@ const shopify = shopifyApi({
     ],
     hostName: process.env.SHOPIFY_HOST_NAME || 'localhost:3000',
     apiVersion: ApiVersion.July24,
-    isEmbeddedApp: true,
+    isEmbeddedApp: process.env.SHOPIFY_APP_TYPE === 'custom' ? false : true,
     sessionStorage: {
         async storeSession(session: Session): Promise<boolean> {
             try {
@@ -208,10 +210,45 @@ router.get('/shopify/callback', async (req: Request, res: Response, next: NextFu
 });
 
 /**
- * 验证会话中间件
+ * 验证会话中间件（支持自定义应用）
  */
 export const verifyShopifySession = async (req: Request, res: Response, next: NextFunction) => {
     try {
+        // 检查是否为自定义应用模式
+        if (CustomAppService.isCustomAppMode()) {
+            // 自定义应用模式：直接使用配置的访问令牌
+            try {
+                const customAppService = new CustomAppService();
+                const session = customAppService.createCustomAppSession();
+
+                // 验证自定义应用配置
+                const validation = await customAppService.validateCustomAppSetup();
+                if (!validation.valid) {
+                    res.status(401).json({
+                        success: false,
+                        error: 'Custom app validation failed',
+                        details: validation.message
+                    });
+                    return;
+                }
+
+                // 将会话信息添加到请求对象
+                (req as any).shopifySession = session;
+                (req as any).isCustomApp = true;
+                next();
+                return;
+            } catch (error) {
+                logger.error('Custom app session creation failed:', error);
+                res.status(500).json({
+                    success: false,
+                    error: 'Custom app setup error',
+                    details: error instanceof Error ? error.message : 'Unknown error'
+                });
+                return;
+            }
+        }
+
+        // 原有的OAuth应用逻辑
         const sessionId = await shopify.session.getCurrentId({
             isOnline: false,
             rawRequest: req,
@@ -254,6 +291,7 @@ export const verifyShopifySession = async (req: Request, res: Response, next: Ne
 
         // 将会话信息添加到请求对象
         (req as any).shopifySession = session;
+        (req as any).isCustomApp = false;
         next();
 
     } catch (error) {

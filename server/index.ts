@@ -173,7 +173,10 @@ if (process.env.NODE_ENV === 'production') {
 
             // 检查是否有必需的环境变量
             const apiKey = process.env.SHOPIFY_API_KEY || '';
-            if (!apiKey) {
+            const appType = process.env.SHOPIFY_APP_TYPE || 'oauth';
+
+            // 对于自定义应用，不需要严格的 API Key 验证
+            if (appType !== 'custom' && !apiKey) {
                 logger.error('SHOPIFY_API_KEY environment variable is not set');
             }
 
@@ -190,7 +193,8 @@ if (process.env.NODE_ENV === 'production') {
                         apiKey: '${apiKey}',
                         shop: '${shop}',
                         host: '${validHost}',
-                        embedded: ${embedded}
+                        embedded: ${embedded},
+                        appType: '${appType}'
                     };
                     
                     // 调试信息

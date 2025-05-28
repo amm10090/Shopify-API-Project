@@ -89,6 +89,23 @@ const queryClient = new QueryClient({
   },
 })
 
+// 自定义 AppBridge Provider 组件，支持自定义应用模式
+interface CustomAppBridgeProviderProps {
+  config: any;
+  children: React.ReactNode;
+}
+
+const CustomAppBridgeProvider: React.FC<CustomAppBridgeProviderProps> = ({ config, children }) => {
+  // 如果是自定义应用模式，直接渲染子组件，不使用 App Bridge
+  if (config.isCustomApp) {
+    console.log('Custom app mode detected - skipping App Bridge initialization');
+    return <>{children}</>;
+  }
+
+  // 对于普通应用，使用标准的 App Bridge Provider
+  return <AppBridgeProvider config={config}>{children}</AppBridgeProvider>;
+};
+
 // 获取Shopify配置
 const getShopifyConfig = () => {
   console.log('=== Shopify Config Debug Info ===');
@@ -98,6 +115,24 @@ const getShopifyConfig = () => {
   // 优先从window.shopifyConfig获取（服务器端注入）
   const windowConfig = (window as any).shopifyConfig || {};
   console.log('Window config:', windowConfig);
+
+  // 检查是否为自定义应用模式
+  const isCustomApp = windowConfig.appType === 'custom' ||
+    new URLSearchParams(window.location.search).get('appType') === 'custom';
+
+  console.log('Is custom app:', isCustomApp);
+
+  // 对于自定义应用，我们不需要完整的App Bridge配置
+  if (isCustomApp) {
+    console.log('Using custom app configuration - bypassing App Bridge requirements');
+    return {
+      apiKey: 'custom-app', // 使用占位符
+      shop: windowConfig.shop || new URLSearchParams(window.location.search).get('shop') || 'custom-app',
+      host: 'custom-app', // 使用占位符
+      forceRedirect: false,
+      isCustomApp: true
+    };
+  }
 
   // 从meta标签获取配置
   const apiKey = document.querySelector('meta[name="shopify-api-key"]')?.getAttribute('content')
@@ -262,7 +297,7 @@ if ((config as any).hasErrors) {
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <AppBridgeErrorBoundary>
-        <AppBridgeProvider config={config}>
+        <CustomAppBridgeProvider config={config}>
           <QueryClientProvider client={queryClient}>
             <PolarisAppProvider i18n={{}}>
               <AppProvider>
@@ -270,7 +305,7 @@ if ((config as any).hasErrors) {
               </AppProvider>
             </PolarisAppProvider>
           </QueryClientProvider>
-        </AppBridgeProvider>
+        </CustomAppBridgeProvider>
       </AppBridgeErrorBoundary>
     </React.StrictMode>,
   )
