@@ -1,41 +1,50 @@
-# Shopify应用配置文件
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 name = "Product Importer"
-client_id = "{{CLIENT_ID}}"  # 将在部署时自动填充
-application_url = "{{APPLICATION_URL}}"  # 将在部署时自动填充
+client_id = "22c17ecd1ecf677dc1c78552e650bd34"
+handle = "product-importer-66"
+include_config_on_deploy = true
+application_url = "https://69.62.86.176:8443"
 embedded = true
 
 [build]
-automatically_update_urls_on_dev = true
-dev_store_url = "{{DEV_STORE_URL}}"  # 您的开发商店URL
+automatically_update_urls_on_dev = false
+dev_store_url = "amm10090.myshopify.com"
+include_config_on_deploy = true
+
+  [build.include]
+  "*" = "dist/**/*"
 
 [access_scopes]
-# 必需的权限范围
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = "read_products,write_products,read_inventory,write_inventory,read_product_listings,write_product_listings,read_collections,write_collections"
 
 [auth]
 redirect_urls = [
-  "{{APPLICATION_URL}}/auth/shopify/callback",
-  "{{APPLICATION_URL}}/auth/callback"
+  "https://69.62.86.176:8443/auth/callback",
+  "https://69.62.86.176:8443/auth/shopify/callback",
+  "https://69.62.86.176:8443/api/auth/callback"
 ]
 
 [webhooks]
 api_version = "2024-07"
 
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "/api/webhooks/app/uninstalled"
+
+  [[webhooks.subscriptions]]
+  topics = [ "orders/create" ]
+  uri = "/api/webhooks/orders/create"
+
+  [[webhooks.subscriptions]]
+  topics = [ "products/update" ]
+  uri = "/api/webhooks/products/update"
+
 [pos]
 embedded = false
 
-[[webhooks.subscriptions]]
-# 应用卸载webhook
-topics = [ "app/uninstalled" ]
-uri = "/api/webhooks/app/uninstalled"
-
-[[webhooks.subscriptions]]
-# 订单创建webhook (可选)
-topics = [ "orders/create" ]
-uri = "/api/webhooks/orders/create"
-
-[[webhooks.subscriptions]]
-# 产品更新webhook (可选)
-topics = [ "products/update" ]
-uri = "/api/webhooks/products/update" 
+[app_proxy]
+url = "https://69.62.86.176:8443/apps/product-importer"
+subpath = "proxy"
+prefix = "apps"

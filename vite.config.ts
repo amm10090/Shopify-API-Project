@@ -9,17 +9,22 @@ export default defineConfig({
         {
             name: 'shopify-template',
             transformIndexHtml(html, context) {
-                // 在开发环境中，从URL参数获取这些值
-                const url = new URL(context.originalUrl || '/', 'http://localhost:5173')
-                const shop = url.searchParams.get('shop') || 'dev-shop.myshopify.com'
-                const host = url.searchParams.get('host') || 'localhost:5173'
-                const embedded = url.searchParams.get('embedded') !== '0'
+                // 只在开发环境中替换占位符，生产环境保留占位符供服务器端处理
+                if (process.env.NODE_ENV === 'development') {
+                    // 在开发环境中，从URL参数获取这些值
+                    const url = new URL(context.originalUrl || '/', 'http://localhost:5173')
+                    const shop = url.searchParams.get('shop') || 'dev-shop.myshopify.com'
+                    const host = url.searchParams.get('host') || 'localhost:5173'
+                    const embedded = url.searchParams.get('embedded') !== '0'
 
+                    return html
+                        .replace('%SHOPIFY_API_KEY%', process.env.SHOPIFY_API_KEY || 'dev-api-key')
+                        .replace('%SHOP%', shop)
+                        .replace('%HOST%', host)
+                        .replace('%EMBEDDED%', embedded.toString())
+                }
+                // 生产环境保留占位符不变
                 return html
-                    .replace('%SHOPIFY_API_KEY%', process.env.SHOPIFY_API_KEY || 'dev-api-key')
-                    .replace('%SHOP%', shop)
-                    .replace('%HOST%', host)
-                    .replace('%EMBEDDED%', embedded.toString())
             }
         }
     ],
@@ -32,6 +37,8 @@ export default defineConfig({
     },
     server: {
         port: 5173,
+        host: '0.0.0.0',
+        strictPort: true,
         proxy: {
             '/api': {
                 target: 'http://localhost:3000',
@@ -46,9 +53,16 @@ export default defineConfig({
     build: {
         outDir: 'dist/client',
         emptyOutDir: true,
+        sourcemap: true,
+        rollupOptions: {
+            input: {
+                main: path.resolve(__dirname, 'index.html')
+            }
+        }
     },
     define: {
         // 确保环境变量在客户端可用
         'process.env.SHOPIFY_API_KEY': JSON.stringify(process.env.SHOPIFY_API_KEY),
+        'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV),
     },
 }) 

@@ -1,6 +1,6 @@
 # Shopify Product Importer
 
-现代化的 Shopify 应用，用于从 CJ (Commission Junction) 和 Pepperjam API 导入产品。
+一个用于从 CJ 和 Pepperjam API 导入产品到 Shopify 的应用程序。
 
 ## 🚀 技术栈
 
@@ -23,68 +23,255 @@
 
 ## 🛠️ 快速开始
 
-### 前置要求
+### 1. 环境准备
 
+确保您的系统已安装：
 - Node.js >= 18.0.0
-- pnpm >= 10.0.0
-- PostgreSQL >= 13
-- Redis >= 6
+- npm >= 8.0.0 或 pnpm >= 8.0.0
+- PostgreSQL 数据库
 
-### 安装步骤
+### 2. 安装依赖
 
-1. **克隆仓库**:
+```bash
+npm install
+# 或
+pnpm install
+```
+
+### 3. 环境配置
+
+复制环境变量模板并配置：
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env` 文件，配置以下必要变量：
+
+```env
+# 数据库
+DATABASE_URL="postgresql://username:password@localhost:5432/shopify_importer"
+
+# Shopify 应用配置
+SHOPIFY_API_KEY="your_shopify_api_key"
+SHOPIFY_API_SECRET="your_shopify_api_secret"
+SHOPIFY_SCOPES="read_products,write_products,read_inventory,write_inventory"
+
+# CJ API 配置
+CJ_API_KEY="your_cj_api_key"
+CJ_COMPANY_ID="your_cj_company_id"
+
+# Pepperjam API 配置
+PEPPERJAM_API_KEY="your_pepperjam_api_key"
+
+# Redis (可选)
+REDIS_URL="redis://localhost:6379"
+```
+
+### 4. 数据库设置
+
+```bash
+# 生成 Prisma 客户端
+npm run db:generate
+
+# 运行数据库迁移
+npm run db:migrate
+
+# (可选) 打开数据库管理界面
+npm run db:studio
+```
+
+## 开发环境
+
+### 启动开发服务器
+
+```bash
+npm run dev
+```
+
+这个命令会同时启动：
+- 🟢 **后端服务器** (http://localhost:3000) - API 服务
+- 🔵 **前端开发服务器** (http://localhost:5173) - React 应用
+- 🟣 **HTTPS 代理** (https://69.62.86.176:8443) - 用于 Shopify 应用
+
+### 单独启动服务
+
+```bash
+# 只启动后端服务器
+npm run dev:server
+
+# 只启动前端开发服务器
+npm run dev:client
+
+# 只启动 HTTPS 代理
+npm run dev:proxy
+```
+
+### 开发工具
+
+```bash
+# 类型检查
+npm run type-check
+npm run type-check:server
+npm run type-check:client
+
+# 代码检查和修复
+npm run lint
+npm run lint:fix
+
+# 检查环境变量配置
+npm run check-env
+```
+
+## 生产环境
+
+### 构建应用
+
+```bash
+npm run build
+```
+
+构建过程包括：
+1. 清理旧的构建文件
+2. 生成 Prisma 客户端
+3. 类型检查
+4. 构建共享模块
+5. 构建服务器端代码
+6. 构建客户端静态文件
+7. 复制必要的生产文件
+
+### 启动生产服务器
+
+```bash
+# 构建并启动
+npm run start:prod
+
+# 或者分步执行
+npm run build
+cd dist
+npm install --production
+npm start
+```
+
+## 脚本说明
+
+### 开发脚本
+- `npm run dev` - 启动完整的开发环境
+- `npm run dev:server` - 启动后端开发服务器
+- `npm run dev:client` - 启动前端开发服务器
+- `npm run dev:proxy` - 启动 HTTPS 代理服务器
+
+### 构建脚本
+- `npm run build` - 完整的生产环境构建
+- `npm run build:server` - 只构建服务器端
+- `npm run build:client` - 只构建客户端
+- `npm run build:shared` - 只构建共享模块
+- `npm run build:watch` - 监听模式构建
+
+### 生产脚本
+- `npm run start` - 启动生产服务器
+- `npm run start:prod` - 构建并启动生产服务器
+- `npm run preview` - 预览构建结果
+
+### 数据库脚本
+- `npm run db:generate` - 生成 Prisma 客户端
+- `npm run db:push` - 推送 schema 到数据库
+- `npm run db:migrate` - 运行数据库迁移
+- `npm run db:studio` - 打开 Prisma Studio
+
+### 工具脚本
+- `npm run clean` - 清理构建文件
+- `npm run lint` - 代码检查
+- `npm run lint:fix` - 自动修复代码问题
+- `npm run type-check` - TypeScript 类型检查
+- `npm run check-env` - 检查环境变量配置
+
+## 部署
+
+### 使用 PM2 部署
+
+```bash
+# 安装 PM2
+npm install -g pm2
+
+# 构建应用
+npm run build
+
+# 启动应用
+pm2 start ecosystem.config.js
+
+# 查看状态
+pm2 status
+
+# 查看日志
+pm2 logs
+```
+
+### 使用 Docker 部署
+
+```bash
+# 构建 Docker 镜像
+docker build -t shopify-importer .
+
+# 运行容器
+docker run -p 3000:3000 --env-file .env shopify-importer
+```
+
+## 故障排除
+
+### 常见问题
+
+1. **端口冲突**
    ```bash
-   git clone <your-repository-url>
-   cd Shopify-API-Project
-   ```
-
-2. **安装 pnpm** (如果尚未安装):
-   ```bash
-   npm install -g pnpm
-   ```
-
-3. **安装依赖**:
-   ```bash
-   pnpm install
-   ```
-
-4. **环境配置**:
-   ```bash
-   cp .env.example .env
-   # 编辑 .env 文件，填入您的 API 密钥和配置
-   ```
-
-5. **数据库设置**:
-   ```bash
-   # 生成 Prisma 客户端
-   pnpm prisma generate
+   # 检查端口占用
+   lsof -i :3000
+   lsof -i :5173
    
-   # 运行数据库迁移
-   pnpm prisma db push
-   
-   # (可选) 查看数据库
-   pnpm prisma studio
+   # 杀死占用进程
+   kill -9 <PID>
    ```
 
-6. **启动开发服务器**:
+2. **数据库连接失败**
    ```bash
-   pnpm dev
+   # 检查数据库连接
+   npm run check-env
+   
+   # 重新生成 Prisma 客户端
+   npm run db:generate
    ```
 
-   应用将在以下地址启动：
-   - 前端: http://localhost:5173
-   - 后端: http://localhost:3000
+3. **构建失败**
+   ```bash
+   # 清理并重新构建
+   npm run clean
+   npm run build
+   ```
 
-### 🔧 可用脚本
+4. **依赖问题**
+   ```bash
+   # 清理 node_modules 并重新安装
+   rm -rf node_modules package-lock.json
+   npm install
+   ```
 
-- `pnpm dev` - 启动开发服务器（前端 + 后端）
-- `pnpm dev:server` - 仅启动后端服务器
-- `pnpm dev:client` - 仅启动前端开发服务器
-- `pnpm build` - 构建生产版本
-- `pnpm start` - 启动生产服务器
-- `pnpm lint` - 运行代码检查
-- `pnpm type-check` - 运行 TypeScript 类型检查
-- `pnpm clean` - 清理构建文件和缓存
+### 日志查看
+
+开发环境日志会直接显示在终端中。生产环境日志位置：
+- 应用日志：`logs/app.log`
+- 错误日志：`logs/error.log`
+- PM2 日志：`~/.pm2/logs/`
+
+## 贡献
+
+1. Fork 项目
+2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 打开 Pull Request
+
+## 许可证
+
+本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
 
 ## 📋 使用指南
 
@@ -140,19 +327,22 @@
 ## 📁 项目结构
 
 ```
-├── client/                 # React 前端
-│   ├── components/         # 可复用组件
-│   ├── pages/             # 页面组件
-│   ├── contexts/          # React Context
-│   └── services/          # API 服务
-├── server/                # Node.js 后端
-│   ├── routes/            # API 路由
-│   ├── services/          # 业务逻辑
-│   ├── middleware/        # 中间件
-│   └── utils/             # 工具函数
-├── prisma/                # 数据库模式
-├── shared/                # 共享类型定义
-└── src/                   # Python 脚本 (原有)
+Shopify-API-Project/
+├── client/                 # React 前端应用
+│   ├── components/        # React 组件
+│   ├── pages/            # 页面组件
+│   ├── contexts/         # React Context
+│   └── services/         # API 服务
+├── server/                # Node.js 后端服务
+│   ├── routes/           # API 路由
+│   ├── services/         # 业务逻辑服务
+│   ├── middleware/       # 中间件
+│   └── utils/           # 工具函数
+├── shared/               # 共享类型和工具
+│   └── types/           # TypeScript 类型定义
+├── scripts/             # 构建和部署脚本
+├── prisma/              # 数据库 schema 和迁移
+└── dist/                # 构建输出目录
 ```
 
 ## Python 脚本使用（传统方式）

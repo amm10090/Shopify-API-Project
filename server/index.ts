@@ -13,7 +13,6 @@ import helmet from 'helmet';
 import dotenv from 'dotenv';
 import path from 'path';
 import { PrismaClient } from '@prisma/client';
-import { createClient } from 'redis';
 
 // Import routes
 import authRoutes from './routes/auth';
@@ -35,11 +34,8 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Initialize database and Redis
+// Initialize database
 export const prisma = new PrismaClient();
-export const redis = createClient({
-    url: process.env.REDIS_URL || 'redis://localhost:6379'
-});
 
 // Middleware
 app.use(helmet({
@@ -117,8 +113,10 @@ app.use('/api/webhooks', webhookRoutes);
 
 // 在生产环境中提供静态文件
 if (process.env.NODE_ENV === 'production') {
-    // Serve built frontend static files
-    app.use(express.static(path.join(__dirname, '../client')));
+    // Serve built frontend static files (but exclude index.html)
+    app.use(express.static(path.join(__dirname, '../client'), {
+        index: false // 不要自动返回index.html，让我们的路由处理器处理
+    }));
 
     // For all non-API routes, return index.html (support frontend routing)
     app.get('*', (req, res) => {
@@ -243,14 +241,6 @@ app.use(errorHandler);
 // 启动服务器
 async function startServer() {
     try {
-        // 尝试连接Redis（可选）
-        try {
-            await redis.connect();
-            logger.info('Connected to Redis');
-        } catch (redisError) {
-            logger.warn('Redis connection failed, continuing without Redis:', redisError);
-        }
-
         // 测试数据库连接
         await prisma.$connect();
         logger.info('Connected to database');
@@ -273,22 +263,12 @@ async function startServer() {
 process.on('SIGINT', async () => {
     logger.info('Shutting down gracefully...');
     await prisma.$disconnect();
-    try {
-        await redis.disconnect();
-    } catch (error) {
-        logger.warn('Redis disconnect failed:', error);
-    }
     process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
     logger.info('Shutting down gracefully...');
     await prisma.$disconnect();
-    try {
-        await redis.disconnect();
-    } catch (error) {
-        logger.warn('Redis disconnect failed:', error);
-    }
     process.exit(0);
 });
 

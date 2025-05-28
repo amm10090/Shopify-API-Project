@@ -1,0 +1,17 @@
+{
+    "extends": "../tsconfig.json",
+    "compilerOptions": {
+        "outDir": "../dist/shared",
+        "rootDir": ".",
+        "declaration": true,
+        "declarationMap": true,
+        "composite": true
+    },
+    "include": [
+        "./**/*"
+    ],
+    "exclude": [
+        "../node_modules",
+        "../dist"
+    ]
+} 
