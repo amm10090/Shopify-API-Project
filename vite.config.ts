@@ -25,6 +25,7 @@ export default defineConfig(({ mode }) => ({
         port: 5173,
         host: '0.0.0.0',
         strictPort: false, // 允许端口变更
+        allowedHosts: ['shopify.amoze.cc'], // 添加允许的主机
         proxy: {
             '/api': {
                 target: 'http://localhost:3000',

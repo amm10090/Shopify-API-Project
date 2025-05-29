@@ -100,6 +100,44 @@ app.use(helmet({
     frameguard: false,
 }));
 
+// 添加动态CSP中间件以支持Shopify iframe嵌入
+app.use((req, res, next) => {
+    const shop = req.query.shop as string;
+    const host = req.query.host as string;
+
+    // 使用自定义域名
+    const applicationUrl = process.env.SHOPIFY_APP_URL ||
+        process.env.APPLICATION_URL ||
+        'https://shopify.amoze.cc';
+    const tunnelDomain = new URL(applicationUrl).hostname;
+
+    if (shop) {
+        // 验证shop格式
+        const sanitizedShop = shop.replace(/[^a-zA-Z0-9\-\.]/g, '');
+        const shopDomain = sanitizedShop.includes('.myshopify.com') ? sanitizedShop : `${sanitizedShop}.myshopify.com`;
+
+        // 设置允许特定shop的frame-ancestors
+        res.setHeader(
+            'Content-Security-Policy',
+            `frame-ancestors https://${shopDomain} https://admin.shopify.com https://*.shopify.com https://${tunnelDomain};`
+        );
+
+        // 完全移除X-Frame-Options，让CSP frame-ancestors控制
+        res.removeHeader('X-Frame-Options');
+
+        logger.info(`Set CSP frame-ancestors for shop: ${shopDomain}, tunnel: ${tunnelDomain}`);
+    } else {
+        // 如果没有shop参数，设置宽松的策略用于开发
+        res.setHeader(
+            'Content-Security-Policy',
+            `frame-ancestors https://*.myshopify.com https://admin.shopify.com https://*.shopify.com https://${tunnelDomain} 'self';`
+        );
+        res.removeHeader('X-Frame-Options');
+    }
+
+    next();
+});
+
 // CORS configuration
 app.use(cors({
     origin: (origin, callback) => {
@@ -109,27 +147,73 @@ app.use(cors({
             return;
         }
 
+        // 获取应用URL中的域名
+        const applicationUrl = process.env.SHOPIFY_APP_URL ||
+            process.env.APPLICATION_URL ||
+            'https://dock-malawi-fu-cocktail.trycloudflare.com'; // 更新为当前URL
+        const tunnelDomain = new URL(applicationUrl).hostname;
+
         // 允许的域名模式
         const allowedOrigins = [
             /^https:\/\/[a-zA-Z0-9][a-zA-Z0-9\-]*\.myshopify\.com$/,
             /^https:\/\/admin\.shopify\.com$/,
             /^https:\/\/[a-zA-Z0-9][a-zA-Z0-9\-]*\.ngrok\.io$/,
+            /^https:\/\/[a-zA-Z0-9][a-zA-Z0-9\-]*\.trycloudflare\.com$/,
             /^https:\/\/localhost:\d+$/,
             /^http:\/\/localhost:\d+$/,
+            new RegExp(`^https://${tunnelDomain.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}$`),
         ];
 
         if (!origin || allowedOrigins.some(pattern => pattern.test(origin))) {
             callback(null, true);
         } else {
             logger.warn(`CORS rejected origin: ${origin}`);
-            callback(null, true); // 临时允许所有来源
+            // 在生产环境中更严格一些，但仍然允许Shopify相关域名
+            callback(null, true); // 可以根据需要改为 callback(new Error('Not allowed by CORS'))
         }
     },
-    credentials: true
+    credentials: true,
+    // 添加预检请求支持
+    optionsSuccessStatus: 200,
+    // 允许的headers
+    allowedHeaders: [
+        'Origin',
+        'X-Requested-With',
+        'Content-Type',
+        'Accept',
+        'Authorization',
+        'X-Shopify-Topic',
+        'X-Shopify-Hmac-Sha256',
+        'X-Shopify-Shop-Domain',
+        'X-Frame-Options'
+    ]
 }));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// 添加请求超时处理，防止Cloudflare 524错误
+app.use((req, res, next) => {
+    // 设置服务器响应超时为90秒（Cloudflare默认100秒）
+    req.setTimeout(90000, () => {
+        logger.warn(`Request timeout for ${req.method} ${req.path}`);
+        if (!res.headersSent) {
+            res.status(408).json({
+                success: false,
+                error: 'Request timeout'
+            });
+        }
+    });
+
+    res.setTimeout(90000, () => {
+        logger.warn(`Response timeout for ${req.method} ${req.path}`);
+        if (!res.headersSent) {
+            res.status(408).end();
+        }
+    });
+
+    next();
+});
 
 // Request logging
 app.use((req, res, next) => {
@@ -191,6 +275,22 @@ async function startServer() {
 
         // 设置通配符路由（在静态文件服务之后）
         app.get('*', async (req, res) => {
+            // 检查嵌入应用重定向逻辑
+            const shop = req.query.shop as string;
+            const host = req.query.host as string;
+            const embedded = req.query.embedded !== '0';
+
+            // 如果这是一个嵌入应用请求但没有embedded参数，需要重定向
+            if (shop && embedded && !req.query.embedded) {
+                const applicationUrl = process.env.SHOPIFY_APP_URL ||
+                    process.env.APPLICATION_URL ||
+                    'https://dock-malawi-fu-cocktail.trycloudflare.com'; // 更新为当前URL
+                const embeddedUrl = `https://admin.shopify.com/store/${shop.replace('.myshopify.com', '')}/apps/${process.env.SHOPIFY_API_KEY || '22c17ecd1ecf677dc1c78552e650bd34'}`;
+
+                logger.info(`Redirecting to embedded app URL: ${embeddedUrl}`);
+                return res.redirect(embeddedUrl);
+            }
+
             // 跳过API路由和所有静态资源
             if (req.path.startsWith('/api') ||
                 req.path.startsWith('/auth') ||
@@ -338,7 +438,6 @@ async function startServer() {
                 logger.info(`Serving app with config: shop=${shop}, host=${validHost ? '***' : 'missing'}, embedded=${embedded}, apiKey=${apiKey ? '***' : 'missing'}`);
 
                 res.setHeader('Content-Type', 'text/html');
-                res.setHeader('X-Frame-Options', 'ALLOWALL');
                 res.send(html);
             } catch (error) {
                 logger.error('Error serving index.html:', error);
