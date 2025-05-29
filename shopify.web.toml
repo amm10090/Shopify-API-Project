@@ -16,4 +16,4 @@ build = "npm run build"
 
 # 开发服务器配置
 [dev]
-port = 8443
+port = 3000

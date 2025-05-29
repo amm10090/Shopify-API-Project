@@ -99,28 +99,14 @@ async function main() {
     // 启动各个服务
     const processes = [];
 
-    // 1. 启动后端服务器（现在同时处理前端和后端）
+    // 启动后端服务器（现在同时处理前端和后端）
     const serverProcess = startProcess(
         'Server',
         'npx',
-        ['tsx', 'watch', '--env-file=.env', 'server/index.ts'],
+        ['tsx', 'watch', 'server/index.ts'],
         'green'
     );
     processes.push(serverProcess);
-
-    // 等待一下让服务器启动
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // 2. 启动 HTTPS 代理，传递后端端口
-    const proxyProcess = startProcess(
-        'Proxy',
-        'node',
-        ['simple-https-proxy.js'],
-        'magenta'
-    );
-    // 设置代理的环境变量
-    proxyProcess.env = { ...process.env, BACKEND_PORT: '3000' };
-    processes.push(proxyProcess);
 
     // 优雅关闭
     process.on('SIGINT', () => {
@@ -135,13 +121,17 @@ async function main() {
 
     // 显示访问信息
     setTimeout(() => {
+        const accessHost = process.env.NODE_ENV === 'production'
+            ? (process.env.SERVER_HOST || '69.62.86.176')
+            : 'localhost';
+
         log('\n' + '='.repeat(50), 'cyan');
         log('🌐 服务已启动:', 'bright');
-        log('   统一服务器（前端+后端）: http://localhost:3000', 'green');
-        log('   HTTPS 代理: https://69.62.86.176:8443', 'magenta');
+        log(`   统一服务器（前端+后端）: http://${accessHost}:3000`, 'green');
         log('\n💡 使用 Ctrl+C 停止所有服务', 'yellow');
+        log('\n📖 注意: 使用 Shopify CLI 隧道访问应用', 'cyan');
         log('='.repeat(50), 'cyan');
-    }, 4000);
+    }, 3000);
 }
 
 main().catch(error => {

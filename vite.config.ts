@@ -24,7 +24,7 @@ export default defineConfig(({ mode }) => ({
     server: {
         port: 5173,
         host: '0.0.0.0',
-        strictPort: true,
+        strictPort: false, // 允许端口变更
         proxy: {
             '/api': {
                 target: 'http://localhost:3000',
@@ -35,6 +35,8 @@ export default defineConfig(({ mode }) => ({
                 changeOrigin: true,
             },
         },
+        // 修复MIME类型问题
+        middlewareMode: false,
     },
     build: {
         outDir: 'dist/client',

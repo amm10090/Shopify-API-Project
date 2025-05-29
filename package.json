@@ -8,7 +8,6 @@
         "dev": "node scripts/dev.js",
         "dev:server": "tsx watch --env-file=.env server/index.ts",
         "dev:client": "vite --port 5173",
-        "dev:proxy": "node simple-https-proxy.js",
         "dev:shopify": "shopify app dev",
         "restart": "chmod +x scripts/restart-services.sh && ./scripts/restart-services.sh",
         "stop": "chmod +x scripts/stop-services.sh && ./scripts/stop-services.sh",

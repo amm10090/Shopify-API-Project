@@ -1,6 +1,4 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
-import { useAppBridge } from '@shopify/app-bridge-react';
-import { authenticatedFetch } from '@shopify/app-bridge/utilities';
 
 // 定义应用状态接口
 interface User {
@@ -53,8 +51,13 @@ interface AppProviderProps {
 // 检测是否为自定义应用模式
 const isCustomAppMode = () => {
     const windowConfig = (window as any).shopifyConfig || {};
-    return windowConfig.appType === 'custom' ||
-        new URLSearchParams(window.location.search).get('appType') === 'custom';
+    return windowConfig.appType === 'custom' || 
+        windowConfig.isCustomApp === true ||
+        windowConfig.skipAppBridge === true ||
+        new URLSearchParams(window.location.search).get('appType') === 'custom' ||
+        process.env.SHOPIFY_APP_TYPE === 'custom' ||
+        // 如果是直接访问localhost且没有shop参数，认为是自定义应用
+        (window.location.hostname === 'localhost' && !window.location.search.includes('shop='));
 };
 
 // 自定义应用的fetch函数（不需要App Bridge认证）
@@ -77,18 +80,30 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     // 检测应用模式
     const isCustomApp = isCustomAppMode();
 
-    // 根据应用模式使用不同的fetch函数
-    let fetch: typeof window.fetch;
+    // 创建认证fetch函数 - 根据最新的Shopify App Bridge模式
+    const createAuthenticatedFetch = (): typeof fetch => {
+        if (isCustomApp) {
+            console.log('Custom app mode detected - using standard fetch');
+            return createCustomAppFetch();
+        } else {
+            console.log('OAuth app mode - using standard fetch with session handling');
+            // 对于OAuth应用，使用标准fetch，让服务器端处理认证
+            return async (input: RequestInfo | URL, init?: RequestInit) => {
+                const headers = {
+                    'Content-Type': 'application/json',
+                    ...init?.headers,
+                };
 
-    if (isCustomApp) {
-        console.log('Custom app mode detected - using standard fetch');
-        fetch = createCustomAppFetch();
-    } else {
-        console.log('OAuth app mode - using authenticated fetch');
-        // eslint-disable-next-line react-hooks/rules-of-hooks
-        const app = useAppBridge();
-        fetch = authenticatedFetch(app);
-    }
+                return fetch(input, {
+                    ...init,
+                    headers,
+                    credentials: 'include', // 包含cookie用于会话管理
+                });
+            };
+        }
+    };
+
+    const authenticatedFetch = createAuthenticatedFetch();
 
     const [state, setState] = useState<AppState>({
         user: null,
@@ -102,7 +117,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     // 检查Shopify会话状态
     const checkShopifySession = async () => {
         try {
-            const response = await fetch('/auth/session');
+            const response = await authenticatedFetch('/auth/session');
             if (response.ok) {
                 const data = await response.json();
                 if (data.success) {
@@ -212,7 +227,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
             try {
                 // 对于OAuth应用，清理Shopify会话
                 if (!isCustomApp) {
-                    await fetch('/auth/logout', { method: 'POST' });
+                    await authenticatedFetch('/auth/logout', { method: 'POST' });
                 }
             } catch (error) {
                 console.error('登出失败:', error);
@@ -268,7 +283,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     const contextValue: AppContextType = {
         state,
         actions,
-        fetch, // 提供认证后的fetch函数
+        fetch: authenticatedFetch, // 提供认证后的fetch函数
     };
 
     return (

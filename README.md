@@ -57,6 +57,10 @@ SHOPIFY_API_KEY="your_shopify_api_key"
 SHOPIFY_API_SECRET="your_shopify_api_secret"
 SHOPIFY_SCOPES="read_products,write_products,read_inventory,write_inventory"
 
+# 服务器配置
+NODE_ENV="development"                    # 开发环境设置
+SERVER_HOST="localhost"                   # 开发环境使用localhost，生产环境设置为实际IP
+
 # CJ API 配置
 CJ_API_KEY="your_cj_api_key"
 CJ_COMPANY_ID="your_cj_company_id"
@@ -91,8 +95,11 @@ npm run dev
 
 这个命令会同时启动：
 - 🟢 **后端服务器** (http://localhost:3000) - API 服务
-- 🔵 **前端开发服务器** (http://localhost:5173) - React 应用
-- 🟣 **HTTPS 代理** (https://69.62.86.176:8443) - 用于 Shopify 应用
+
+> **注意**: 
+> - 在开发环境中，应用会在localhost:3000运行
+> - Shopify CLI会自动创建隧道来访问您的应用
+> - 不再需要手动配置HTTPS代理，Shopify CLI会处理所有的隧道和SSL需求
 
 ### 单独启动服务
 
@@ -103,8 +110,8 @@ npm run dev:server
 # 只启动前端开发服务器
 npm run dev:client
 
-# 只启动 HTTPS 代理
-npm run dev:proxy
+# 使用 Shopify CLI 开发模式
+npm run dev:shopify
 ```
 
 ### 开发工具
@@ -159,7 +166,7 @@ npm start
 - `npm run dev` - 启动完整的开发环境
 - `npm run dev:server` - 启动后端开发服务器
 - `npm run dev:client` - 启动前端开发服务器
-- `npm run dev:proxy` - 启动 HTTPS 代理服务器
+- `npm run dev:shopify` - 使用 Shopify CLI 开发模式
 
 ### 构建脚本
 - `npm run build` - 完整的生产环境构建

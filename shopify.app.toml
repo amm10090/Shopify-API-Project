@@ -1,31 +1,16 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-name = "Product Importer"
 client_id = "22c17ecd1ecf677dc1c78552e650bd34"
-handle = "product-importer-66"
-include_config_on_deploy = true
-application_url = "https://meals-principle-printing-pottery.trycloudflare.com"
+name = "Product Importer"
+handle = "amm10090-product-importer-v2"
+application_url = "https://brakes-primary-started-buy.trycloudflare.com"
 embedded = true
+include_config_on_deploy = true
 
 [build]
 automatically_update_urls_on_dev = true
 dev_store_url = "amm10090.myshopify.com"
 include_config_on_deploy = true
-web_directories = [ "." ]
-
-  [build.include]
-  "*" = "dist/**/*"
-
-[access_scopes]
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_products,write_products,read_inventory,write_inventory,read_product_listings,write_product_listings,read_orders"
-
-[auth]
-redirect_urls = [
-  "https://meals-principle-printing-pottery.trycloudflare.com/auth/callback",
-  "https://meals-principle-printing-pottery.trycloudflare.com/auth/shopify/callback",
-  "https://meals-principle-printing-pottery.trycloudflare.com/api/auth/callback"
-]
 
 [webhooks]
 api_version = "2024-07"
@@ -42,10 +27,21 @@ api_version = "2024-07"
   topics = [ "products/update" ]
   uri = "/api/webhooks/products/update"
 
-[pos]
-embedded = false
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_inventory,read_orders,read_product_listings,read_products,write_inventory,write_product_listings,write_products"
+
+[auth]
+redirect_urls = [
+  "https://brakes-primary-started-buy.trycloudflare.com/auth/callback",
+  "https://brakes-primary-started-buy.trycloudflare.com/auth/shopify/callback",
+  "https://brakes-primary-started-buy.trycloudflare.com/api/auth/callback"
+]
 
 [app_proxy]
-url = "https://meals-principle-printing-pottery.trycloudflare.com:8443/apps/product-importer"
+url = "https://brakes-primary-started-buy.trycloudflare.com/apps/amm10090-product-importer-v2"
 subpath = "proxy"
 prefix = "apps"
+
+[pos]
+embedded = false
