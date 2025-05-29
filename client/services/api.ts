@@ -83,6 +83,11 @@ export const productApi = {
         return api.put(`/products/${id}`, updates);
     },
 
+    // 从源API更新产品信息
+    updateProductFromSource: async (id: string): Promise<ApiResponse<UnifiedProduct>> => {
+        return api.post(`/products/${id}/update-from-source`);
+    },
+
     // 删除产品
     deleteProduct: async (id: string): Promise<ApiResponse<void>> => {
         return api.delete(`/products/${id}`);
@@ -91,6 +96,11 @@ export const productApi = {
     // 批量操作
     bulkAction: async (action: string, productIds: string[]): Promise<ApiResponse<any>> => {
         return api.post('/products/bulk', { action, productIds });
+    },
+
+    // 批量从源API更新产品信息
+    bulkUpdateFromSource: async (productIds: string[]): Promise<ApiResponse<any>> => {
+        return api.post('/products/bulk', { action: 'update_from_source', productIds });
     },
 };
 
@@ -175,14 +185,19 @@ export const shopifyApi = {
         return api.post('/shopify/import', { productIds });
     },
 
-    // 同步产品状态
-    syncProductStatus: async (productId: string): Promise<ApiResponse<any>> => {
-        return api.post(`/shopify/sync/${productId}`);
+    // 更新已导入的产品
+    updateProducts: async (productIds: string[]): Promise<ApiResponse<any>> => {
+        return api.post('/shopify/update', { productIds });
     },
 
     // 获取Shopify连接状态
     getConnectionStatus: async (): Promise<ApiResponse<any>> => {
         return api.get('/shopify/status');
+    },
+
+    // 同步产品状态
+    syncProductStatus: async (productIds?: string[]): Promise<ApiResponse<any>> => {
+        return api.post('/shopify/sync-status', { productIds });
     },
 };
 

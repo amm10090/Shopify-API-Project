@@ -37,6 +37,7 @@ import {
     ProductIcon,
     CalendarIcon,
     InventoryIcon,
+    RefreshIcon,
 } from '@shopify/polaris-icons';
 import { productApi, brandApi, shopifyApi } from '../services/api';
 import { UnifiedProduct, Brand } from '@shared/types';
@@ -169,6 +170,74 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
         }
     }, [selectedProducts, showToast, setIsLoading, fetchProducts]);
 
+    const handleBulkDatabaseUpdate = useCallback(async () => {
+        if (selectedProducts.length === 0) {
+            showToast('Please select products to update');
+            return;
+        }
+
+        setIsLoading(true);
+        try {
+            const response = await productApi.bulkUpdateFromSource(selectedProducts);
+
+            if (response.success) {
+                const { success, failed, noChanges, errors } = response.data;
+
+                if (failed > 0) {
+                    showToast(`Update completed: ${success} updated, ${noChanges} no changes, ${failed} failed. Check console for details.`);
+                    console.error('Update errors:', errors);
+                } else if (noChanges > 0 && success === 0) {
+                    showToast(`All ${noChanges} products are already up to date`);
+                } else {
+                    showToast(`Successfully updated ${success} products${noChanges > 0 ? `, ${noChanges} already up to date` : ''}`);
+                }
+
+                setSelectedProducts([]);
+                fetchProducts(); // 刷新产品列表
+            } else {
+                showToast(response.error || 'Failed to bulk update');
+            }
+        } catch (error) {
+            console.error('Error during bulk database update:', error);
+            showToast('Failed to bulk update');
+        } finally {
+            setIsLoading(false);
+        }
+    }, [selectedProducts, showToast, setIsLoading, fetchProducts]);
+
+    const handleBulkStatusSync = useCallback(async () => {
+        if (selectedProducts.length === 0) {
+            showToast('Please select products to sync status');
+            return;
+        }
+
+        setIsLoading(true);
+        try {
+            const response = await shopifyApi.syncProductStatus(selectedProducts);
+
+            if (response.success) {
+                const { checked, stillExists, deleted, updated, errors } = response.data;
+
+                if (errors && errors.length > 0) {
+                    showToast(`Status sync completed: ${checked} checked, ${deleted} marked as deleted, ${errors.length} errors. Check console for details.`);
+                    console.error('Sync errors:', errors);
+                } else {
+                    showToast(`Status sync completed: ${checked} checked, ${stillExists} still exist, ${deleted} marked as deleted`);
+                }
+
+                setSelectedProducts([]);
+                fetchProducts(); // 刷新产品列表
+            } else {
+                showToast(response.error || 'Failed to sync status');
+            }
+        } catch (error) {
+            console.error('Error during status sync:', error);
+            showToast('Failed to sync status');
+        } finally {
+            setIsLoading(false);
+        }
+    }, [selectedProducts, showToast, setIsLoading, fetchProducts]);
+
     const handleBulkDelete = useCallback(async () => {
         setIsLoading(true);
         try {
@@ -212,6 +281,59 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
         } catch (error) {
             console.error('Error importing product:', error);
             showToast('Failed to import product');
+        } finally {
+            setImportProgress(prev => ({ ...prev, [productId]: false }));
+            setIsLoading(false);
+        }
+    }, [showToast, setIsLoading, fetchProducts]);
+
+    // 处理已导入产品的更新
+    const handleSingleUpdate = useCallback(async (productId: string) => {
+        setImportProgress(prev => ({ ...prev, [productId]: true }));
+        setIsLoading(true);
+        try {
+            const response = await shopifyApi.updateProducts([productId]);
+
+            if (response.success) {
+                const { success, failed, noChanges, errors } = response.data;
+
+                if (failed > 0) {
+                    showToast(`Update failed: ${errors[0]?.error || 'Unknown error'}`);
+                } else if (noChanges > 0) {
+                    showToast('No changes detected - product is already up to date');
+                } else {
+                    showToast('Product updated successfully');
+                }
+
+                fetchProducts(); // 刷新产品列表
+            } else {
+                showToast(response.error || 'Failed to update product');
+            }
+        } catch (error) {
+            console.error('Error updating product:', error);
+            showToast('Failed to update product');
+        } finally {
+            setImportProgress(prev => ({ ...prev, [productId]: false }));
+            setIsLoading(false);
+        }
+    }, [showToast, setIsLoading, fetchProducts]);
+
+    // 处理数据库信息更新（从源API重新获取商品信息并更新数据库）
+    const handleDatabaseUpdate = useCallback(async (productId: string) => {
+        setImportProgress(prev => ({ ...prev, [productId]: true }));
+        setIsLoading(true);
+        try {
+            const response = await productApi.updateProductFromSource(productId);
+
+            if (response.success) {
+                showToast('Product information updated successfully');
+                fetchProducts(); // 刷新产品列表
+            } else {
+                showToast(response.error || 'Failed to update product information');
+            }
+        } catch (error) {
+            console.error('Error updating product from source:', error);
+            showToast('Failed to update product information');
         } finally {
             setImportProgress(prev => ({ ...prev, [productId]: false }));
             setIsLoading(false);
@@ -635,6 +757,20 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                                     </Button>
                                                     <Button
                                                         variant="secondary"
+                                                        icon={RefreshIcon}
+                                                        onClick={handleBulkDatabaseUpdate}
+                                                    >
+                                                        Update Product Data
+                                                    </Button>
+                                                    <Button
+                                                        variant="secondary"
+                                                        icon={RefreshIcon}
+                                                        onClick={handleBulkStatusSync}
+                                                    >
+                                                        Sync Status
+                                                    </Button>
+                                                    <Button
+                                                        variant="secondary"
                                                         icon={ExportIcon}
                                                         onClick={() => showToast('Export function is under development')}
                                                     >
@@ -840,7 +976,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                                             {/* 操作按钮 */}
                                                             <div style={{
                                                                 display: 'flex',
-                                                                gap: '6px',
+                                                                gap: '4px',
                                                                 alignItems: 'center',
                                                                 justifyContent: 'center',
                                                                 flexWrap: 'wrap'
@@ -864,6 +1000,19 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                                                         onClick={() => handleProductEdit(product)}
                                                                     />
                                                                 </Tooltip>
+
+                                                                {/* 数据库更新按钮 - 对所有商品都显示 */}
+                                                                <Tooltip content="Update product data from source API">
+                                                                    <Button
+                                                                        size="slim"
+                                                                        icon={RefreshIcon}
+                                                                        variant="tertiary"
+                                                                        loading={importProgress[product.id]}
+                                                                        onClick={() => handleDatabaseUpdate(product.id)}
+                                                                    />
+                                                                </Tooltip>
+
+                                                                {/* Shopify相关操作按钮 */}
                                                                 {product.importStatus === 'pending' && (
                                                                     <Button
                                                                         size="slim"
@@ -873,6 +1022,16 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                                                         onClick={() => handleSingleImport(product.id)}
                                                                     >
                                                                         Import
+                                                                    </Button>
+                                                                )}
+                                                                {product.importStatus === 'imported' && (
+                                                                    <Button
+                                                                        size="slim"
+                                                                        variant="secondary"
+                                                                        loading={importProgress[product.id]}
+                                                                        onClick={() => handleSingleUpdate(product.id)}
+                                                                    >
+                                                                        Sync
                                                                     </Button>
                                                                 )}
                                                             </div>

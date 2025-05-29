@@ -434,6 +434,92 @@ export class ProductRetriever {
     }
 
     /**
+     * 获取CJ API原始产品数据（不进行转换）
+     */
+    async fetchCJProductsRaw(params: CJFetchParams): Promise<any[]> {
+        this.checkEnvironmentVariables();
+
+        const apiToken = process.env.CJ_API_TOKEN;
+        if (!apiToken) {
+            throw new Error('CJ_API_TOKEN not found in environment variables');
+        }
+
+        // 获取Company ID，优先使用CJ_CID，然后BRAND_CID，最后使用默认值
+        const companyId = process.env.CJ_CID || process.env.BRAND_CID || '7520009';
+        logger.debug(`Using CJ Company ID: ${companyId}`);
+
+        const limit = Math.min(params.limit || 50, 100);
+
+        // 使用与fetchCJProducts相同的GraphQL查询结构
+        const query = `
+            {
+                products(
+                    companyId: "${companyId}", 
+                    partnerIds: ["${params.advertiserId}"], 
+                    limit: ${limit}
+                ) {
+                    totalCount
+                    count
+                    resultList {
+                        advertiserId
+                        advertiserName
+                        id
+                        title
+                        description
+                        price {
+                            amount
+                            currency
+                        }
+                        imageLink
+                        link
+                        brand
+                        lastUpdated
+                        ... on Shopping {
+                            availability
+                            productType
+                            googleProductCategory {
+                                id
+                                name
+                            }
+                        }
+                    }
+                }
+            }
+        `;
+
+        try {
+            const response = await axios.post(
+                'https://ads.api.cj.com/query',
+                { query },
+                {
+                    headers: {
+                        'Authorization': `Bearer ${apiToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: 30000
+                }
+            );
+
+            if (response.data.errors) {
+                logger.error('CJ API errors:', response.data.errors);
+                throw new Error(`CJ API error: ${response.data.errors[0]?.message || 'Unknown error'}`);
+            }
+
+            const products = response.data.data?.products?.resultList || [];
+            logger.info(`CJ API returned ${products.length} raw products for advertiser ${params.advertiserId}`);
+
+            return products;
+
+        } catch (error) {
+            logger.error('Error fetching CJ products raw data:', error);
+            if (axios.isAxiosError(error)) {
+                throw new Error(`CJ API request failed: ${error.response?.data?.message || error.message}`);
+            }
+            throw error;
+        }
+    }
+
+    /**
      * 将Pepperjam产品转换为UnifiedProduct
      */
     private async pepperjamProductToUnified(
@@ -595,5 +681,76 @@ export class ProductRetriever {
 
         logger.info(`Fetched and converted ${unifiedProducts.length} products from Pepperjam (target: ${limit})`);
         return unifiedProducts.slice(0, limit);
+    }
+
+    /**
+     * 获取Pepperjam API原始产品数据（不进行转换）
+     */
+    async fetchPepperjamProductsRaw(params: PepperjamFetchParams): Promise<any[]> {
+        this.checkEnvironmentVariables();
+
+        const apiKey = process.env.ASCEND_API_KEY;
+        if (!apiKey) {
+            throw new Error('ASCEND_API_KEY not found in environment variables');
+        }
+
+        const baseUrl = process.env.PEPPERJAM_API_BASE_URL || 'https://api.pepperjamnetwork.com';
+        const endpoint = `${baseUrl}/20120402/publisher/creative/product`;
+
+        const allRawProducts: any[] = [];
+        let currentPage = 1;
+        const limit = Math.min(params.limit || 50, 100);
+        let totalRequested = 0;
+
+        try {
+            while (totalRequested < limit) {
+                const pageLimit = Math.min(limit - totalRequested, 100);
+
+                const requestParams: any = {
+                    apiKey,
+                    format: 'json',
+                    programId: params.programId,
+                    page: currentPage,
+                    limit: pageLimit
+                };
+
+                if (params.keywords && params.keywords.length > 0) {
+                    requestParams.keyword = params.keywords.join(' ');
+                }
+
+                logger.info(`Fetching Pepperjam raw products: page ${currentPage}, limit ${pageLimit}`);
+
+                const response = await axios.get(endpoint, {
+                    params: requestParams,
+                    timeout: 30000
+                });
+
+                if (!response.data || response.data.meta?.status?.code !== 200) {
+                    const errorMsg = response.data?.meta?.status?.message || 'Unknown API error';
+                    throw new Error(`Pepperjam API error: ${errorMsg}`);
+                }
+
+                const products = response.data.data || [];
+                allRawProducts.push(...products);
+
+                totalRequested += products.length;
+
+                if (products.length < pageLimit) {
+                    break;
+                }
+
+                currentPage++;
+            }
+
+            logger.info(`Pepperjam API returned ${allRawProducts.length} raw products for program ${params.programId}`);
+            return allRawProducts;
+
+        } catch (error) {
+            logger.error('Error fetching Pepperjam products raw data:', error);
+            if (axios.isAxiosError(error)) {
+                throw new Error(`Pepperjam API request failed: ${error.response?.data?.message || error.message}`);
+            }
+            throw error;
+        }
     }
 } 

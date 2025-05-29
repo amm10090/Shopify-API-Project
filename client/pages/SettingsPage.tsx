@@ -19,7 +19,7 @@ import {
     Spinner,
 } from '@shopify/polaris';
 import { SaveIcon, ConnectIcon } from '@shopify/polaris-icons';
-import { settingsApi } from '../services/api';
+import { settingsApi, shopifyApi } from '../services/api';
 
 interface SettingsPageProps {
     showToast: (message: string) => void;
@@ -43,6 +43,7 @@ interface SystemSettings {
     system: {
         defaultProductLimit: number;
         skipImageValidation: boolean;
+        defaultInventoryQuantity: number;
         logLevel: string;
         nodeEnv: string;
     };
@@ -78,6 +79,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
     // 导入设置
     const [defaultProductLimit, setDefaultProductLimit] = useState('50');
     const [skipImageValidation, setSkipImageValidation] = useState(false);
+    const [defaultInventoryQuantity, setDefaultInventoryQuantity] = useState('99');
     const [autoImportEnabled, setAutoImportEnabled] = useState(false);
     const [importSchedule, setImportSchedule] = useState('daily');
 
@@ -100,6 +102,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                 // 填充系统设置表单字段
                 setDefaultProductLimit(settingsResponse.data.system.defaultProductLimit.toString());
                 setSkipImageValidation(settingsResponse.data.system.skipImageValidation);
+                setDefaultInventoryQuantity(settingsResponse.data.system.defaultInventoryQuantity?.toString() || '99');
 
                 // 注意：出于安全考虑，API密钥等敏感信息不会从后端返回
                 // 用户需要重新输入这些信息来更新它们
@@ -223,6 +226,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                     settingsData = {
                         defaultProductLimit: parseInt(defaultProductLimit) || 50,
                         skipImageValidation: skipImageValidation,
+                        defaultInventoryQuantity: parseInt(defaultInventoryQuantity) || 99,
                         autoImportEnabled: autoImportEnabled,
                         importSchedule: importSchedule
                     };
@@ -261,6 +265,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
         shopifyAccessToken,
         defaultProductLimit,
         skipImageValidation,
+        defaultInventoryQuantity,
         autoImportEnabled,
         importSchedule,
         emailNotifications,
@@ -282,6 +287,28 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                 return <Badge tone="attention">Unknown</Badge>;
         }
     };
+
+    // 全局状态同步
+    const handleGlobalStatusSync = useCallback(async () => {
+        setSavingSettings(true);
+        try {
+            const response = await shopifyApi.syncProductStatus();
+
+            if (response.success) {
+                const { checked, stillExists, deleted, updated } = response.data;
+                showToast(`Status sync completed: ${checked} checked, ${stillExists} still exist, ${deleted} marked as deleted`);
+                // 重新获取设置以更新状态
+                await fetchSettings();
+            } else {
+                throw new Error(response.error || 'Failed to sync product statuses');
+            }
+        } catch (error) {
+            console.error('Error syncing product statuses:', error);
+            showToast(`Failed to sync product statuses: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        } finally {
+            setSavingSettings(false);
+        }
+    }, [showToast, fetchSettings]);
 
     if (loading) {
         return (
@@ -471,6 +498,17 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                                         autoComplete="off"
                                     />
 
+                                    <TextField
+                                        label="Default Inventory Quantity"
+                                        type="number"
+                                        value={defaultInventoryQuantity}
+                                        onChange={setDefaultInventoryQuantity}
+                                        min="0"
+                                        max="999999"
+                                        helpText="Default inventory quantity for imported products"
+                                        autoComplete="off"
+                                    />
+
                                     <Checkbox
                                         label="Skip Image Validation"
                                         checked={skipImageValidation}
@@ -554,9 +592,19 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                         <BlockStack gap="400">
                             <InlineStack align="space-between">
                                 <Text as="h2" variant="headingMd">System Status</Text>
-                                <Button variant="plain" onClick={fetchSettings}>
-                                    Refresh Status
-                                </Button>
+                                <InlineStack gap="200">
+                                    <Button variant="plain" onClick={fetchSettings}>
+                                        Refresh Status
+                                    </Button>
+                                    <Button
+                                        variant="primary"
+                                        size="slim"
+                                        onClick={handleGlobalStatusSync}
+                                        loading={savingSettings}
+                                    >
+                                        Sync All Product Status
+                                    </Button>
+                                </InlineStack>
                             </InlineStack>
 
                             <BlockStack gap="300">

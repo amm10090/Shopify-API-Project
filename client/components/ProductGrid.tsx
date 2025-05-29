@@ -93,7 +93,13 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ showToast, setIsLoadin
     const handleProductImport = useCallback(async (productId: string) => {
         setIsLoading(true);
         try {
-            const response = await fetch('/api/shopify/import', {
+            // 获取产品信息以确定是导入还是更新
+            const product = products.find(p => p.id === productId);
+            const isUpdate = product?.importStatus === 'imported';
+            const endpoint = isUpdate ? '/api/shopify/update' : '/api/shopify/import';
+            const actionName = isUpdate ? 'update' : 'import';
+
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -106,24 +112,29 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ showToast, setIsLoadin
             const result = await response.json();
 
             if (result.success) {
-                const { success, failed, errors } = result.data;
+                const { success, failed, noChanges, errors } = result.data;
 
                 if (failed > 0) {
-                    showToast(`Import failed: ${errors[0]?.error || 'Unknown error'}`);
+                    showToast(`${actionName} failed: ${errors[0]?.error || 'Unknown error'}`);
+                } else if (noChanges > 0) {
+                    showToast('No changes detected - product is already up to date');
                 } else {
-                    showToast('Product imported successfully');
+                    showToast(`Product ${actionName}ed successfully`);
                 }
 
                 fetchProducts(); // Refresh product list
             } else {
-                showToast(result.error || 'Failed to import product');
+                showToast(result.error || `Failed to ${actionName} product`);
             }
         } catch (error) {
-            showToast('Failed to import product');
+            const product = products.find(p => p.id === productId);
+            const isUpdate = product?.importStatus === 'imported';
+            const actionName = isUpdate ? 'update' : 'import';
+            showToast(`Failed to ${actionName} product`);
         } finally {
             setIsLoading(false);
         }
-    }, [showToast, setIsLoading, fetchProducts]);
+    }, [showToast, setIsLoading, fetchProducts, products]);
 
     // 处理批量导入
     const handleBulkImport = useCallback(async () => {
@@ -134,39 +145,82 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ showToast, setIsLoadin
 
         setIsLoading(true);
         try {
-            const response = await fetch('/api/shopify/import', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    productIds: selectedProducts
-                })
+            // 分离导入和更新的产品
+            const productsToImport = selectedProducts.filter(id => {
+                const product = products.find(p => p.id === id);
+                return product?.importStatus !== 'imported';
             });
 
-            const result = await response.json();
+            const productsToUpdate = selectedProducts.filter(id => {
+                const product = products.find(p => p.id === id);
+                return product?.importStatus === 'imported';
+            });
 
-            if (result.success) {
-                const { success, failed, errors } = result.data;
+            let totalSuccess = 0;
+            let totalFailed = 0;
+            let totalNoChanges = 0;
+            const allErrors: any[] = [];
 
-                if (failed > 0) {
-                    showToast(`Import completed: ${success} successful, ${failed} failed. Check console for details.`);
-                    console.error('Import errors:', errors);
-                } else {
-                    showToast(`Successfully imported ${success} products`);
+            // 处理导入
+            if (productsToImport.length > 0) {
+                const importResponse = await fetch('/api/shopify/import', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        productIds: productsToImport
+                    })
+                });
+
+                const importResult = await importResponse.json();
+                if (importResult.success) {
+                    totalSuccess += importResult.data.success;
+                    totalFailed += importResult.data.failed;
+                    allErrors.push(...importResult.data.errors);
                 }
-
-                setSelectedProducts([]);
-                fetchProducts(); // Refresh product list
-            } else {
-                showToast(result.error || 'Failed to bulk import');
             }
+
+            // 处理更新
+            if (productsToUpdate.length > 0) {
+                const updateResponse = await fetch('/api/shopify/update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        productIds: productsToUpdate
+                    })
+                });
+
+                const updateResult = await updateResponse.json();
+                if (updateResult.success) {
+                    totalSuccess += updateResult.data.success;
+                    totalFailed += updateResult.data.failed;
+                    totalNoChanges += updateResult.data.noChanges || 0;
+                    allErrors.push(...updateResult.data.errors);
+                }
+            }
+
+            // 显示结果
+            if (totalFailed > 0) {
+                showToast(`Operation completed: ${totalSuccess} successful, ${totalFailed} failed${totalNoChanges > 0 ? `, ${totalNoChanges} no changes` : ''}. Check console for details.`);
+                console.error('Operation errors:', allErrors);
+            } else if (totalNoChanges > 0) {
+                showToast(`Operation completed: ${totalSuccess} successful, ${totalNoChanges} had no changes`);
+            } else {
+                showToast(`Successfully processed ${totalSuccess} products`);
+            }
+
+            setSelectedProducts([]);
+            fetchProducts(); // Refresh product list
+
         } catch (error) {
-            showToast('Failed to bulk import');
+            showToast('Failed to process products');
         } finally {
             setIsLoading(false);
         }
-    }, [selectedProducts, showToast, setIsLoading, fetchProducts]);
+    }, [selectedProducts, showToast, setIsLoading, fetchProducts, products]);
 
     // 渲染产品网格
     const renderProductGrid = () => {
@@ -209,7 +263,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ showToast, setIsLoadin
                                     variant="primary"
                                     onClick={handleBulkImport}
                                 >
-                                    Bulk Import to Shopify
+                                    Process Selected Products
                                 </Button>
                             </InlineStack>
                         </div>

@@ -31,6 +31,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
             system: {
                 defaultProductLimit: parseInt(process.env.DEFAULT_PRODUCT_LIMIT || '50'),
                 skipImageValidation: process.env.SKIP_IMAGE_VALIDATION === 'true',
+                defaultInventoryQuantity: parseInt(process.env.SHOPIFY_DEFAULT_PRODUCT_INVENTORY || '99'),
                 logLevel: process.env.LOG_LEVEL || 'info',
                 nodeEnv: process.env.NODE_ENV || 'development'
             }
@@ -60,6 +61,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
             shopifyAccessToken,
             defaultProductLimit,
             skipImageValidation,
+            defaultInventoryQuantity,
             autoImportEnabled,
             importSchedule,
             emailNotifications,
@@ -73,7 +75,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
             hasShopifyUrl: !!shopifyStoreUrl,
             hasShopifyToken: !!shopifyAccessToken,
             defaultProductLimit,
-            skipImageValidation
+            skipImageValidation,
+            defaultInventoryQuantity
         });
 
         // 读取现有的 .env 文件
@@ -126,6 +129,10 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
         if (skipImageValidation !== undefined) {
             envVars['SKIP_IMAGE_VALIDATION'] = skipImageValidation.toString();
             process.env.SKIP_IMAGE_VALIDATION = skipImageValidation.toString();
+        }
+        if (defaultInventoryQuantity !== undefined) {
+            envVars['SHOPIFY_DEFAULT_PRODUCT_INVENTORY'] = defaultInventoryQuantity.toString();
+            process.env.SHOPIFY_DEFAULT_PRODUCT_INVENTORY = defaultInventoryQuantity.toString();
         }
 
         // 重新构建 .env 文件内容

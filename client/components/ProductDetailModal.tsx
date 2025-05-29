@@ -11,8 +11,11 @@ import {
     Thumbnail,
     Banner,
     List,
+    Collapsible,
+    Card,
+    Spinner,
 } from '@shopify/polaris';
-import { ImportIcon, ExternalIcon, EditIcon } from '@shopify/polaris-icons';
+import { ImportIcon, ExternalIcon, EditIcon, CodeIcon } from '@shopify/polaris-icons';
 import { UnifiedProduct } from '@shared/types';
 
 interface ProductDetailModalProps {
@@ -33,11 +36,42 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
     isImporting = false
 }) => {
     const [imageError, setImageError] = useState(false);
+    const [apiDataExpanded, setApiDataExpanded] = useState(false);
+    const [apiData, setApiData] = useState(null);
+    const [loadingApiData, setLoadingApiData] = useState(false);
 
     if (!product) return null;
 
     const handleImageError = () => {
         setImageError(true);
+    };
+
+    // 获取API源数据
+    const fetchApiData = async () => {
+        if (apiData) return; // 如果已经加载过数据，直接返回
+
+        setLoadingApiData(true);
+        try {
+            const response = await fetch(`/api/products/${product.id}/raw-data`);
+            const result = await response.json();
+
+            if (result.success) {
+                setApiData(result.data);
+            } else {
+                console.error('Failed to fetch API data:', result.error);
+            }
+        } catch (error) {
+            console.error('Error fetching API data:', error);
+        } finally {
+            setLoadingApiData(false);
+        }
+    };
+
+    const handleApiDataToggle = () => {
+        if (!apiDataExpanded && !apiData) {
+            fetchApiData();
+        }
+        setApiDataExpanded(!apiDataExpanded);
     };
 
     const getStatusBadge = (status: string) => {
@@ -95,6 +129,15 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             loading: isImporting,
             onAction: () => onImport(product.id),
             disabled: !product.availability,
+        });
+    }
+
+    // Add update action if product is imported and callback is provided
+    if (product.importStatus === 'imported' && onImport) {
+        primaryActions.push({
+            content: 'Update Product',
+            loading: isImporting,
+            onAction: () => onImport(product.id),
         });
     }
 
@@ -294,6 +337,75 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                                 <p>This product is out of stock and cannot be imported.</p>
                             </Banner>
                         )}
+                    </BlockStack>
+
+                    <Divider />
+
+                    {/* API 源数据展开框 */}
+                    <BlockStack gap="300">
+                        <InlineStack align="space-between">
+                            <Text as="h3" variant="headingMd">API Source Data</Text>
+                            <Button
+                                variant="plain"
+                                icon={CodeIcon}
+                                onClick={handleApiDataToggle}
+                                loading={loadingApiData}
+                            >
+                                {apiDataExpanded ? 'Hide' : 'Show'} Raw Data
+                            </Button>
+                        </InlineStack>
+
+                        <Collapsible
+                            open={apiDataExpanded}
+                            id="api-data-collapsible"
+                            transition={{ duration: '200ms', timingFunction: 'ease-in-out' }}
+                        >
+                            <Card>
+                                <Box padding="400">
+                                    {loadingApiData ? (
+                                        <div style={{ textAlign: 'center', padding: '20px' }}>
+                                            <Spinner size="small" />
+                                            <Text as="p" variant="bodyMd" tone="subdued">
+                                                Loading API data...
+                                            </Text>
+                                        </div>
+                                    ) : apiData ? (
+                                        <BlockStack gap="300">
+                                            <Text as="h4" variant="headingSm">
+                                                Original {product.sourceApi.toUpperCase()} API Response
+                                            </Text>
+                                            <Box
+                                                background="bg-surface-secondary"
+                                                padding="300"
+                                                borderRadius="200"
+                                                borderWidth="025"
+                                                borderColor="border"
+                                            >
+                                                <pre style={{
+                                                    fontSize: '12px',
+                                                    lineHeight: '1.4',
+                                                    margin: 0,
+                                                    whiteSpace: 'pre-wrap',
+                                                    wordBreak: 'break-word',
+                                                    maxHeight: '400px',
+                                                    overflow: 'auto',
+                                                    fontFamily: 'Monaco, Consolas, "Lucida Console", monospace'
+                                                }}>
+                                                    {JSON.stringify(apiData, null, 2)}
+                                                </pre>
+                                            </Box>
+                                            <Text as="p" variant="bodySm" tone="subdued">
+                                                This is the raw data returned from the {product.sourceApi.toUpperCase()} API for this product.
+                                            </Text>
+                                        </BlockStack>
+                                    ) : (
+                                        <Text as="p" variant="bodyMd" tone="subdued">
+                                            No raw API data available for this product.
+                                        </Text>
+                                    )}
+                                </Box>
+                            </Card>
+                        </Collapsible>
                     </BlockStack>
                 </BlockStack>
             </Modal.Section>

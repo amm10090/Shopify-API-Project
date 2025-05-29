@@ -237,18 +237,28 @@ export const ProductCard: React.FC<ProductCardProps> = ({
                             )}
 
                             {product.importStatus === 'imported' && (
-                                <Button
-                                    variant="plain"
-                                    size="slim"
-                                    icon={ViewIcon}
-                                    url={product.shopifyProductId ?
-                                        `/admin/products/${product.shopifyProductId}` :
-                                        undefined
-                                    }
-                                    external={!!product.shopifyProductId}
-                                >
-                                    View in Shopify
-                                </Button>
+                                <>
+                                    <Button
+                                        variant="secondary"
+                                        size="slim"
+                                        loading={importing || isImporting}
+                                        onClick={handleImport}
+                                    >
+                                        Update Product
+                                    </Button>
+                                    <Button
+                                        variant="plain"
+                                        size="slim"
+                                        icon={ViewIcon}
+                                        url={product.shopifyProductId ?
+                                            `/admin/products/${product.shopifyProductId}` :
+                                            undefined
+                                        }
+                                        external={!!product.shopifyProductId}
+                                    >
+                                        View in Shopify
+                                    </Button>
+                                </>
                             )}
 
                             <Button

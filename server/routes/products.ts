@@ -1,117 +1,136 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { verifyShopifySession } from '@server/routes/auth';
 import { prisma } from '@server/index';
-import { ProductRetriever } from '@server/services/ProductRetriever';
 import { logger } from '@server/utils/logger';
+import { ProductRetriever } from '@server/services/ProductRetriever';
 import { ApiResponse, PaginatedResponse, UnifiedProduct, ProductFilters } from '@shared/types/index';
 
 const router = Router();
 const productRetriever = new ProductRetriever();
 
+// 应用会话验证中间件到所有路由
+router.use(verifyShopifySession);
+
 /**
- * 获取产品列表（分页）
+ * 获取产品列表
  */
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 20;
-        const skip = (page - 1) * limit;
+        const {
+            page = 1,
+            limit = 20,
+            brandId,
+            sourceApi,
+            availability,
+            importStatus,
+            search,
+            minPrice,
+            maxPrice
+        } = req.query;
 
-        // 构建过滤条件
+        const pageNum = parseInt(page as string);
+        const limitNum = parseInt(limit as string);
+        const offset = (pageNum - 1) * limitNum;
+
+        // 构建查询条件
         const where: any = {};
 
-        if (req.query.brandId) {
-            where.brandId = req.query.brandId;
+        if (brandId) {
+            where.brandId = brandId as string;
         }
 
-        if (req.query.sourceApi) {
-            where.sourceApi = req.query.sourceApi;
+        if (sourceApi) {
+            where.sourceApi = (sourceApi as string).toUpperCase();
         }
 
-        if (req.query.availability !== undefined) {
-            where.availability = req.query.availability === 'true';
+        if (availability !== undefined) {
+            where.availability = availability === 'true';
         }
 
-        if (req.query.importStatus) {
-            where.importStatus = (req.query.importStatus as string).toUpperCase();
+        if (importStatus) {
+            where.importStatus = (importStatus as string).toUpperCase();
         }
 
-        if (req.query.search) {
-            const search = req.query.search as string;
+        if (search) {
             where.OR = [
-                { title: { contains: search, mode: 'insensitive' } },
-                { description: { contains: search, mode: 'insensitive' } },
-                { sku: { contains: search, mode: 'insensitive' } }
+                { title: { contains: search as string, mode: 'insensitive' } },
+                { description: { contains: search as string, mode: 'insensitive' } },
+                { sku: { contains: search as string, mode: 'insensitive' } }
             ];
         }
 
-        // 价格范围过滤
-        if (req.query.minPrice || req.query.maxPrice) {
+        if (minPrice || maxPrice) {
             where.price = {};
-            if (req.query.minPrice) {
-                where.price.gte = parseFloat(req.query.minPrice as string);
-            }
-            if (req.query.maxPrice) {
-                where.price.lte = parseFloat(req.query.maxPrice as string);
-            }
+            if (minPrice) where.price.gte = parseFloat(minPrice as string);
+            if (maxPrice) where.price.lte = parseFloat(maxPrice as string);
         }
 
-        const [products, total] = await Promise.all([
-            prisma.product.findMany({
-                where,
-                skip,
-                take: limit,
-                include: {
-                    brand: true
-                },
-                orderBy: {
-                    lastUpdated: 'desc'
-                }
-            }),
-            prisma.product.count({ where })
-        ]);
+        // 获取产品总数
+        const total = await prisma.product.count({ where });
 
-        const response: PaginatedResponse<UnifiedProduct> = {
-            data: products.map(p => ({
-                id: p.id,
-                sourceApi: p.sourceApi.toLowerCase() as 'cj' | 'pepperjam',
-                sourceProductId: p.sourceProductId,
-                brandName: p.brand.name,
-                title: p.title,
-                description: p.description,
-                price: p.price,
-                salePrice: p.salePrice || undefined,
-                currency: p.currency,
-                imageUrl: p.imageUrl,
-                affiliateUrl: p.affiliateUrl,
-                categories: p.categories,
-                availability: p.availability,
-                shopifyProductId: p.shopifyProductId || undefined,
-                importStatus: p.importStatus.toLowerCase() as 'pending' | 'imported' | 'failed',
-                lastUpdated: p.lastUpdated,
-                keywordsMatched: p.keywordsMatched,
-                sku: p.sku || undefined
-            })),
+        // 获取产品列表
+        const products = await prisma.product.findMany({
+            where,
+            include: {
+                brand: true
+            },
+            orderBy: { lastUpdated: 'desc' },
+            skip: offset,
+            take: limitNum
+        });
+
+        // 转换为前端需要的格式
+        const transformedProducts = products.map(product => ({
+            id: product.id,
+            sourceApi: product.sourceApi.toLowerCase(),
+            sourceProductId: product.sourceProductId,
+            brandName: product.brand.name,
+            title: product.title,
+            description: product.description,
+            price: product.price,
+            salePrice: product.salePrice,
+            currency: product.currency,
+            imageUrl: product.imageUrl,
+            affiliateUrl: product.affiliateUrl,
+            categories: product.categories,
+            availability: product.availability,
+            shopifyProductId: product.shopifyProductId,
+            importStatus: product.importStatus.toLowerCase(),
+            lastUpdated: product.lastUpdated,
+            keywordsMatched: product.keywordsMatched,
+            sku: product.sku
+        }));
+
+        const totalPages = Math.ceil(total / limitNum);
+
+        res.json({
+            success: true,
+            data: transformedProducts,
             pagination: {
-                page,
-                limit,
+                page: pageNum,
+                limit: limitNum,
                 total,
-                totalPages: Math.ceil(total / limit)
+                totalPages,
+                hasNextPage: pageNum < totalPages,
+                hasPreviousPage: pageNum > 1
             }
-        };
+        });
 
-        res.json(response);
     } catch (error) {
+        logger.error('Error fetching products:', error);
         next(error);
     }
 });
 
 /**
- * 根据ID获取单个产品
+ * 获取单个产品详情
  */
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
+        const { id } = req.params;
+
         const product = await prisma.product.findUnique({
-            where: { id: req.params.id },
+            where: { id },
             include: { brand: true }
         });
 
@@ -123,221 +142,259 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
             return;
         }
 
-        const unifiedProduct: UnifiedProduct = {
+        // 转换为前端需要的格式
+        const transformedProduct = {
             id: product.id,
-            sourceApi: product.sourceApi.toLowerCase() as 'cj' | 'pepperjam',
+            sourceApi: product.sourceApi.toLowerCase(),
             sourceProductId: product.sourceProductId,
             brandName: product.brand.name,
             title: product.title,
             description: product.description,
             price: product.price,
-            salePrice: product.salePrice || undefined,
+            salePrice: product.salePrice,
             currency: product.currency,
             imageUrl: product.imageUrl,
             affiliateUrl: product.affiliateUrl,
             categories: product.categories,
             availability: product.availability,
-            shopifyProductId: product.shopifyProductId || undefined,
-            importStatus: product.importStatus.toLowerCase() as 'pending' | 'imported' | 'failed',
+            shopifyProductId: product.shopifyProductId,
+            importStatus: product.importStatus.toLowerCase(),
             lastUpdated: product.lastUpdated,
             keywordsMatched: product.keywordsMatched,
-            sku: product.sku || undefined
+            sku: product.sku
         };
 
         res.json({
             success: true,
-            data: unifiedProduct
+            data: transformedProduct
         });
+
     } catch (error) {
+        logger.error('Error fetching product:', error);
         next(error);
     }
 });
 
 /**
- * 从API获取产品（不保存到数据库）
+ * 获取产品的原始API数据
  */
-router.post('/fetch', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id/raw-data', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const { brandId, keywords, limit = 50, apiType } = req.body;
+        const { id } = req.params;
 
-        if (!brandId) {
-            res.status(400).json({
-                success: false,
-                error: 'Brand ID is required'
-            });
-            return;
-        }
+        logger.info(`Getting raw API data for product: ${id}`);
 
-        // 获取品牌信息
-        const brand = await prisma.brand.findUnique({
-            where: { id: brandId }
+        const product = await prisma.product.findUnique({
+            where: { id },
+            include: { brand: true }
         });
 
-        if (!brand) {
+        if (!product) {
             res.status(404).json({
                 success: false,
-                error: 'Brand not found'
+                error: 'Product not found'
             });
             return;
         }
 
-        let products: UnifiedProduct[] = [];
-
-        if (brand.apiType === 'CJ') {
-            products = await productRetriever.fetchCJProducts({
-                advertiserId: brand.apiId,
-                keywords: keywords ? keywords.split(',').map((k: string) => k.trim()) : [],
-                limit
-            });
-        } else if (brand.apiType === 'PEPPERJAM') {
-            products = await productRetriever.fetchPepperjamProducts({
-                programId: brand.apiId,
-                keywords: keywords ? keywords.split(',').map((k: string) => k.trim()) : [],
-                limit
-            });
-        }
-
-        res.json({
-            success: true,
-            data: products,
-            message: `Fetched ${products.length} products from ${brand.apiType} API`
-        });
-    } catch (error) {
-        next(error);
-    }
-});
-
-/**
- * 保存获取的产品到数据库
- */
-router.post('/save', async (req: Request, res: Response, next: NextFunction) => {
-    try {
-        const { products, brandId } = req.body;
-
-        if (!products || !Array.isArray(products)) {
-            res.status(400).json({
-                success: false,
-                error: 'Products array is required'
+        // 如果数据库中已经有原始API数据，直接返回
+        if (product.rawApiData) {
+            logger.info(`Returning cached raw API data for product: ${id}`);
+            res.json({
+                success: true,
+                data: product.rawApiData,
+                cached: true
             });
             return;
         }
 
-        if (!brandId) {
-            res.status(400).json({
-                success: false,
-                error: 'Brand ID is required'
-            });
-            return;
-        }
+        // 从API获取原始数据
+        logger.info(`Fetching fresh data for product: ${product.title}`);
 
-        const savedProducts = [];
-        const errors = [];
+        try {
+            let rawProducts = [];
 
-        for (const productData of products) {
-            try {
-                // 检查产品是否已存在
-                const existingProduct = await prisma.product.findFirst({
-                    where: {
-                        sourceApi: productData.sourceApi.toUpperCase(),
-                        sourceProductId: productData.sourceProductId
-                    }
+            // 根据API类型获取原始数据
+            if (product.sourceApi === 'CJ') {
+                rawProducts = await productRetriever.fetchCJProductsRaw({
+                    advertiserId: product.brand.apiId,
+                    keywords: [product.title],
+                    limit: 10
+                });
+            } else if (product.sourceApi === 'PEPPERJAM') {
+                rawProducts = await productRetriever.fetchPepperjamProductsRaw({
+                    programId: product.brand.apiId,
+                    keywords: [product.title],
+                    limit: 10
+                });
+            }
+
+            // 查找匹配的产品
+            let matchedRawProduct = null;
+            if (rawProducts && rawProducts.length > 0) {
+                // 首先尝试通过源产品ID匹配
+                matchedRawProduct = rawProducts.find((p: any) => {
+                    const productId = product.sourceApi === 'CJ' ?
+                        p.sku :
+                        p.id || p.product_id;
+                    return productId === product.sourceProductId;
                 });
 
-                if (existingProduct) {
-                    // 更新现有产品
-                    const updatedProduct = await prisma.product.update({
-                        where: { id: existingProduct.id },
-                        data: {
-                            title: productData.title,
-                            description: productData.description,
-                            price: productData.price,
-                            salePrice: productData.salePrice,
-                            currency: productData.currency,
-                            imageUrl: productData.imageUrl,
-                            affiliateUrl: productData.affiliateUrl,
-                            categories: productData.categories,
-                            availability: productData.availability,
-                            keywordsMatched: productData.keywordsMatched || [],
-                            sku: productData.sku,
-                            lastUpdated: new Date()
-                        }
+                // 如果通过ID没找到，尝试通过标题匹配
+                if (!matchedRawProduct) {
+                    matchedRawProduct = rawProducts.find((p: any) => {
+                        const apiTitle = p.name || p.title || p.product_name || '';
+                        return apiTitle.toLowerCase().includes(product.title.toLowerCase()) ||
+                            product.title.toLowerCase().includes(apiTitle.toLowerCase());
                     });
-                    savedProducts.push(updatedProduct);
-                } else {
-                    // 创建新产品
-                    const newProduct = await prisma.product.create({
-                        data: {
-                            sourceApi: productData.sourceApi.toUpperCase(),
-                            sourceProductId: productData.sourceProductId,
-                            brandId,
-                            title: productData.title,
-                            description: productData.description,
-                            price: productData.price,
-                            salePrice: productData.salePrice,
-                            currency: productData.currency,
-                            imageUrl: productData.imageUrl,
-                            affiliateUrl: productData.affiliateUrl,
-                            categories: productData.categories,
-                            availability: productData.availability,
-                            keywordsMatched: productData.keywordsMatched || [],
-                            sku: productData.sku,
-                            importStatus: 'PENDING'
-                        }
-                    });
-                    savedProducts.push(newProduct);
                 }
-            } catch (error) {
-                logger.error(`Error saving product ${productData.title}:`, error);
-                errors.push({
-                    product: productData.title,
-                    error: error instanceof Error ? error.message : 'Unknown error'
+            }
+
+            if (matchedRawProduct) {
+                // 将原始数据保存到数据库以便下次使用
+                await prisma.product.update({
+                    where: { id },
+                    data: { rawApiData: matchedRawProduct }
+                });
+
+                logger.info(`Fetched and cached raw API data for product: ${id}`);
+
+                res.json({
+                    success: true,
+                    data: matchedRawProduct,
+                    cached: false
+                });
+            } else {
+                logger.warn(`No matching raw data found for product: ${product.title}`);
+                res.json({
+                    success: false,
+                    error: 'No raw API data found for this product',
+                    message: 'The original API data could not be retrieved. This may happen if the product is no longer available in the source API.'
                 });
             }
+
+        } catch (apiError) {
+            logger.error(`Error fetching raw API data for product ${id}:`, apiError);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch raw API data',
+                details: apiError instanceof Error ? apiError.message : 'Unknown error'
+            });
         }
 
-        res.json({
-            success: true,
-            data: {
-                saved: savedProducts.length,
-                errors: errors.length,
-                details: errors
-            },
-            message: `Saved ${savedProducts.length} products, ${errors.length} errors`
-        });
     } catch (error) {
+        logger.error('Error in raw data endpoint:', error);
         next(error);
     }
 });
 
 /**
- * 更新产品状态
+ * 从源API更新产品信息
  */
-router.patch('/:id/status', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/update-from-source', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const { importStatus } = req.body;
+        const { id } = req.params;
 
-        if (!['pending', 'imported', 'failed'].includes(importStatus)) {
-            res.status(400).json({
+        logger.info(`Updating product from source: ${id}`);
+
+        const product = await prisma.product.findUnique({
+            where: { id },
+            include: { brand: true }
+        });
+
+        if (!product) {
+            res.status(404).json({
                 success: false,
-                error: 'Invalid import status'
+                error: 'Product not found'
             });
             return;
         }
 
-        const product = await prisma.product.update({
-            where: { id: req.params.id },
+        if (!product.brand) {
+            res.status(400).json({
+                success: false,
+                error: 'Product has no associated brand'
+            });
+            return;
+        }
+
+        // 从API获取最新产品信息
+        let updatedProducts: UnifiedProduct[] = [];
+
+        if (product.sourceApi === 'CJ') {
+            updatedProducts = await productRetriever.fetchCJProducts({
+                advertiserId: product.brand.apiId,
+                keywords: [product.title],
+                limit: 10
+            });
+        } else if (product.sourceApi === 'PEPPERJAM') {
+            updatedProducts = await productRetriever.fetchPepperjamProducts({
+                programId: product.brand.apiId,
+                keywords: [product.title],
+                limit: 10
+            });
+        }
+
+        // 找到匹配的产品
+        const matchedProduct = updatedProducts.find(p =>
+            p.sourceProductId === product.sourceProductId ||
+            p.title.toLowerCase().includes(product.title.toLowerCase()) ||
+            product.title.toLowerCase().includes(p.title.toLowerCase())
+        );
+
+        if (!matchedProduct) {
+            res.status(404).json({
+                success: false,
+                error: 'Updated product data not found'
+            });
+            return;
+        }
+
+        // 更新产品信息
+        const updatedProduct = await prisma.product.update({
+            where: { id },
             data: {
-                importStatus: importStatus.toUpperCase(),
+                title: matchedProduct.title,
+                description: matchedProduct.description,
+                price: matchedProduct.price,
+                salePrice: matchedProduct.salePrice,
+                imageUrl: matchedProduct.imageUrl,
+                availability: matchedProduct.availability,
+                categories: matchedProduct.categories,
                 lastUpdated: new Date()
-            }
+            },
+            include: { brand: true }
         });
+
+        // 转换为前端格式
+        const transformedProduct = {
+            id: updatedProduct.id,
+            sourceApi: updatedProduct.sourceApi.toLowerCase(),
+            sourceProductId: updatedProduct.sourceProductId,
+            brandName: updatedProduct.brand.name,
+            title: updatedProduct.title,
+            description: updatedProduct.description,
+            price: updatedProduct.price,
+            salePrice: updatedProduct.salePrice,
+            currency: updatedProduct.currency,
+            imageUrl: updatedProduct.imageUrl,
+            affiliateUrl: updatedProduct.affiliateUrl,
+            categories: updatedProduct.categories,
+            availability: updatedProduct.availability,
+            shopifyProductId: updatedProduct.shopifyProductId,
+            importStatus: updatedProduct.importStatus.toLowerCase(),
+            lastUpdated: updatedProduct.lastUpdated,
+            keywordsMatched: updatedProduct.keywordsMatched,
+            sku: updatedProduct.sku
+        };
 
         res.json({
             success: true,
-            data: product,
-            message: 'Product status updated'
+            data: transformedProduct
         });
+
     } catch (error) {
+        logger.error('Error updating product from source:', error);
         next(error);
     }
 });
@@ -347,97 +404,47 @@ router.patch('/:id/status', async (req: Request, res: Response, next: NextFuncti
  */
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const {
-            title,
-            description,
-            price,
-            salePrice,
-            currency,
-            imageUrl,
-            availability,
-            categories,
-            sku
-        } = req.body;
-
-        // 验证必需字段
-        if (title !== undefined && !title.trim()) {
-            res.status(400).json({
-                success: false,
-                error: 'Title cannot be empty'
-            });
-            return;
-        }
-
-        if (price !== undefined && (isNaN(price) || price < 0)) {
-            res.status(400).json({
-                success: false,
-                error: 'Price must be a valid positive number'
-            });
-            return;
-        }
-
-        // 检查产品是否存在
-        const existingProduct = await prisma.product.findUnique({
-            where: { id: req.params.id }
-        });
-
-        if (!existingProduct) {
-            res.status(404).json({
-                success: false,
-                error: 'Product not found'
-            });
-            return;
-        }
-
-        // 构建更新数据
-        const updateData: any = {
-            lastUpdated: new Date()
-        };
-
-        if (title !== undefined) updateData.title = title.trim();
-        if (description !== undefined) updateData.description = description.trim();
-        if (price !== undefined) updateData.price = parseFloat(price);
-        if (salePrice !== undefined) updateData.salePrice = salePrice ? parseFloat(salePrice) : null;
-        if (currency !== undefined) updateData.currency = currency;
-        if (imageUrl !== undefined) updateData.imageUrl = imageUrl.trim();
-        if (availability !== undefined) updateData.availability = Boolean(availability);
-        if (categories !== undefined) updateData.categories = Array.isArray(categories) ? categories : [];
-        if (sku !== undefined) updateData.sku = sku.trim();
+        const { id } = req.params;
+        const updateData = req.body;
 
         const updatedProduct = await prisma.product.update({
-            where: { id: req.params.id },
-            data: updateData,
+            where: { id },
+            data: {
+                ...updateData,
+                lastUpdated: new Date()
+            },
             include: { brand: true }
         });
 
-        // 转换为UnifiedProduct格式
-        const unifiedProduct: UnifiedProduct = {
+        // 转换为前端格式
+        const transformedProduct = {
             id: updatedProduct.id,
-            sourceApi: updatedProduct.sourceApi.toLowerCase() as 'cj' | 'pepperjam',
+            sourceApi: updatedProduct.sourceApi.toLowerCase(),
             sourceProductId: updatedProduct.sourceProductId,
             brandName: updatedProduct.brand.name,
             title: updatedProduct.title,
             description: updatedProduct.description,
             price: updatedProduct.price,
-            salePrice: updatedProduct.salePrice || undefined,
+            salePrice: updatedProduct.salePrice,
             currency: updatedProduct.currency,
             imageUrl: updatedProduct.imageUrl,
             affiliateUrl: updatedProduct.affiliateUrl,
             categories: updatedProduct.categories,
             availability: updatedProduct.availability,
-            shopifyProductId: updatedProduct.shopifyProductId || undefined,
-            importStatus: updatedProduct.importStatus.toLowerCase() as 'pending' | 'imported' | 'failed',
+            shopifyProductId: updatedProduct.shopifyProductId,
+            importStatus: updatedProduct.importStatus.toLowerCase(),
             lastUpdated: updatedProduct.lastUpdated,
             keywordsMatched: updatedProduct.keywordsMatched,
-            sku: updatedProduct.sku || undefined
+            sku: updatedProduct.sku
         };
 
         res.json({
             success: true,
-            data: unifiedProduct,
-            message: 'Product updated successfully'
+            data: transformedProduct
         });
+
     } catch (error) {
+        logger.error('Error updating product:', error);
         next(error);
     }
 });
@@ -447,15 +454,19 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
  */
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
     try {
+        const { id } = req.params;
+
         await prisma.product.delete({
-            where: { id: req.params.id }
+            where: { id }
         });
 
         res.json({
             success: true,
-            message: 'Product deleted'
+            message: 'Product deleted successfully'
         });
+
     } catch (error) {
+        logger.error('Error deleting product:', error);
         next(error);
     }
 });
@@ -467,10 +478,10 @@ router.post('/bulk', async (req: Request, res: Response, next: NextFunction) => 
     try {
         const { action, productIds } = req.body;
 
-        if (!action || !productIds || !Array.isArray(productIds)) {
+        if (!productIds || !Array.isArray(productIds)) {
             res.status(400).json({
                 success: false,
-                error: 'Action and product IDs are required'
+                error: 'Product IDs array is required'
             });
             return;
         }
@@ -482,25 +493,113 @@ router.post('/bulk', async (req: Request, res: Response, next: NextFunction) => 
                 result = await prisma.product.deleteMany({
                     where: { id: { in: productIds } }
                 });
-                break;
-
-            case 'mark_imported':
-                result = await prisma.product.updateMany({
-                    where: { id: { in: productIds } },
-                    data: {
-                        importStatus: 'IMPORTED',
-                        lastUpdated: new Date()
-                    }
+                res.json({
+                    success: true,
+                    data: { count: result.count },
+                    message: `Deleted ${result.count} products`
                 });
                 break;
 
-            case 'mark_failed':
-                result = await prisma.product.updateMany({
-                    where: { id: { in: productIds } },
-                    data: {
-                        importStatus: 'FAILED',
-                        lastUpdated: new Date()
+            case 'update_from_source':
+                // 批量从源API更新产品信息
+                const results = {
+                    success: 0,
+                    failed: 0,
+                    noChanges: 0,
+                    errors: [] as any[]
+                };
+
+                for (const productId of productIds) {
+                    try {
+                        const product = await prisma.product.findUnique({
+                            where: { id: productId },
+                            include: { brand: true }
+                        });
+
+                        if (!product || !product.brand) {
+                            results.failed++;
+                            results.errors.push({
+                                productId,
+                                error: 'Product or brand not found'
+                            });
+                            continue;
+                        }
+
+                        // 从API获取最新信息
+                        let updatedProducts: UnifiedProduct[] = [];
+
+                        if (product.sourceApi === 'CJ') {
+                            updatedProducts = await productRetriever.fetchCJProducts({
+                                advertiserId: product.brand.apiId,
+                                keywords: [product.title],
+                                limit: 10
+                            });
+                        } else if (product.sourceApi === 'PEPPERJAM') {
+                            updatedProducts = await productRetriever.fetchPepperjamProducts({
+                                programId: product.brand.apiId,
+                                keywords: [product.title],
+                                limit: 10
+                            });
+                        }
+
+                        const matchedProduct = updatedProducts.find(p =>
+                            p.sourceProductId === product.sourceProductId ||
+                            p.title.toLowerCase().includes(product.title.toLowerCase())
+                        );
+
+                        if (!matchedProduct) {
+                            results.failed++;
+                            results.errors.push({
+                                productId,
+                                error: 'Updated product data not found'
+                            });
+                            continue;
+                        }
+
+                        // 检查是否有变化
+                        const hasChanges = (
+                            product.title !== matchedProduct.title ||
+                            product.description !== matchedProduct.description ||
+                            product.price !== matchedProduct.price ||
+                            product.salePrice !== matchedProduct.salePrice ||
+                            product.imageUrl !== matchedProduct.imageUrl ||
+                            product.availability !== matchedProduct.availability
+                        );
+
+                        if (!hasChanges) {
+                            results.noChanges++;
+                            continue;
+                        }
+
+                        // 更新产品
+                        await prisma.product.update({
+                            where: { id: productId },
+                            data: {
+                                title: matchedProduct.title,
+                                description: matchedProduct.description,
+                                price: matchedProduct.price,
+                                salePrice: matchedProduct.salePrice,
+                                imageUrl: matchedProduct.imageUrl,
+                                availability: matchedProduct.availability,
+                                categories: matchedProduct.categories,
+                                lastUpdated: new Date()
+                            }
+                        });
+
+                        results.success++;
+
+                    } catch (error) {
+                        results.failed++;
+                        results.errors.push({
+                            productId,
+                            error: error instanceof Error ? error.message : 'Unknown error'
+                        });
                     }
+                }
+
+                res.json({
+                    success: true,
+                    data: results
                 });
                 break;
 
@@ -509,15 +608,10 @@ router.post('/bulk', async (req: Request, res: Response, next: NextFunction) => 
                     success: false,
                     error: 'Invalid action'
                 });
-                return;
         }
 
-        res.json({
-            success: true,
-            data: result,
-            message: `Bulk ${action} completed for ${result.count} products`
-        });
     } catch (error) {
+        logger.error('Error in bulk operation:', error);
         next(error);
     }
 });

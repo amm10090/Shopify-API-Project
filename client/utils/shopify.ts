@@ -19,12 +19,13 @@ export const getShopifyStoreName = async (): Promise<string> => {
         // 从设置API获取店铺配置
         const response = await fetch('/api/settings');
         const data = await response.json();
-        
+
         if (data.success && data.data?.shopify?.storeName) {
             const storeName = data.data.shopify.storeName;
             // 去掉.myshopify.com后缀，只保留店铺名称
-            cachedStoreName = storeName.replace(/\.myshopify\.com$/, '');
-            return cachedStoreName;
+            const cleanStoreName = storeName.replace(/\.myshopify\.com$/, '');
+            cachedStoreName = cleanStoreName;
+            return cleanStoreName;
         }
     } catch (error) {
         console.warn('Failed to fetch store name from API, using fallback:', error);

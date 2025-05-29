@@ -46,6 +46,7 @@ model Product {
   lastUpdated      DateTime      @default(now())
   keywordsMatched  String[]
   sku              String?       @unique
+  rawApiData       Json?         // 存储原始API响应数据
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 

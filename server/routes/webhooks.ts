@@ -178,6 +178,63 @@ router.post('/products/update', captureRawBody, verifyWebhookSignature, async (r
 });
 
 /**
+ * 产品删除webhook - 同步更新数据库状态
+ */
+router.post('/products/delete', captureRawBody, verifyWebhookSignature, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const product = req.body;
+        const shop = req.get('X-Shopify-Shop-Domain');
+        const shopifyProductId = product.id?.toString();
+
+        logger.info(`Product deleted webhook received`, {
+            productId: shopifyProductId,
+            title: product.title,
+            shop: shop
+        });
+
+        if (!shopifyProductId) {
+            logger.warn('No product ID in deletion webhook');
+            res.status(200).json({ received: true });
+            return;
+        }
+
+        // 查找并更新数据库中对应的产品
+        const existingProduct = await prisma.product.findFirst({
+            where: {
+                shopifyProductId: shopifyProductId
+            }
+        });
+
+        if (existingProduct) {
+            // 更新产品状态为pending并清除Shopify产品ID
+            await prisma.product.update({
+                where: { id: existingProduct.id },
+                data: {
+                    shopifyProductId: null,
+                    importStatus: 'PENDING',
+                    lastUpdated: new Date()
+                }
+            });
+
+            logger.info(`Updated product status after deletion`, {
+                internalProductId: existingProduct.id,
+                title: existingProduct.title,
+                shopifyProductId: shopifyProductId,
+                newStatus: 'PENDING'
+            });
+        } else {
+            logger.info(`No matching product found in database for deleted Shopify product ${shopifyProductId}`);
+        }
+
+        res.status(200).json({ received: true });
+
+    } catch (error) {
+        logger.error('Error handling product delete webhook:', error);
+        next(error);
+    }
+});
+
+/**
  * GDPR合规webhook：客户数据请求
  */
 router.post('/customers/data_request', captureRawBody, verifyWebhookSignature, async (req: Request, res: Response, next: NextFunction) => {

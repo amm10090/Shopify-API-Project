@@ -342,7 +342,11 @@ export class ShopifyService {
 
             // 设置库存
             if (unifiedProduct.availability && product.variants && product.variants[0]) {
-                await this.setInventory(session, product.variants[0].inventory_item_id, 99);
+                const defaultQuantity = parseInt(process.env.SHOPIFY_DEFAULT_PRODUCT_INVENTORY || '99');
+                logger.info(`Setting inventory for new product ${product.id} with default quantity: ${defaultQuantity} (availability: ${unifiedProduct.availability})`);
+                await this.setInventory(session, product.variants[0].inventory_item_id, defaultQuantity);
+            } else {
+                logger.info(`Skipping inventory setup - availability: ${unifiedProduct.availability}, has variants: ${!!(product.variants && product.variants[0])}`);
             }
 
             return product;
@@ -426,6 +430,9 @@ export class ShopifyService {
                     });
                     changed = true;
                 }
+
+                // 检查并更新库存
+                await this.checkAndUpdateInventory(session, variant);
             }
 
             // 更新图片
@@ -449,9 +456,69 @@ export class ShopifyService {
 
             return product;
 
-        } catch (error) {
+        } catch (error: any) {
+            // 检查是否是 404 错误
+            if (error.response?.code === 404 || error.message?.includes('404') || error.message?.includes('Not Found')) {
+                const productNotFoundError = new Error(`Product with ID ${productId} not found in Shopify store`);
+                (productNotFoundError as any).code = 'PRODUCT_NOT_FOUND';
+                (productNotFoundError as any).productId = productId;
+                throw productNotFoundError;
+            }
+
             logger.error(`Error updating product ${productId}:`, error);
             throw error;
+        }
+    }
+
+    /**
+     * 检查并更新库存，如果当前库存低于设置的Default Inventory Quantity，则更新
+     */
+    private async checkAndUpdateInventory(session: Session, variant: any): Promise<void> {
+        try {
+            if (!variant.inventory_item_id) {
+                logger.warn(`Variant ${variant.id} has no inventory_item_id, skipping inventory check`);
+                return;
+            }
+
+            const client = this.getRestClient(session);
+            const defaultInventoryQuantity = parseInt(process.env.SHOPIFY_DEFAULT_PRODUCT_INVENTORY || '99');
+
+            logger.info(`Checking inventory for variant ${variant.id}, default quantity: ${defaultInventoryQuantity}`);
+
+            // 获取当前库存级别
+            const inventoryResponse = await client.get({
+                path: `inventory_levels?inventory_item_ids=${variant.inventory_item_id}`
+            });
+
+            const inventoryLevels = inventoryResponse.body?.inventory_levels || [];
+
+            if (inventoryLevels.length === 0) {
+                logger.info(`No inventory levels found for variant ${variant.id}, setting to default quantity: ${defaultInventoryQuantity}`);
+                await this.setInventory(session, variant.inventory_item_id, defaultInventoryQuantity);
+                return;
+            }
+
+            // 计算总库存
+            let totalInventory = 0;
+            for (const level of inventoryLevels) {
+                if (level.available !== null && level.available !== undefined) {
+                    totalInventory += level.available;
+                }
+            }
+
+            logger.info(`Current total inventory for variant ${variant.id}: ${totalInventory}, default: ${defaultInventoryQuantity}`);
+
+            // 如果当前库存低于默认库存，则更新到默认库存
+            if (totalInventory < defaultInventoryQuantity) {
+                logger.info(`Current inventory (${totalInventory}) is below default (${defaultInventoryQuantity}), updating...`);
+                await this.setInventory(session, variant.inventory_item_id, defaultInventoryQuantity);
+            } else {
+                logger.info(`Current inventory (${totalInventory}) is above or equal to default (${defaultInventoryQuantity}), no update needed`);
+            }
+
+        } catch (error) {
+            logger.error(`Error checking/updating inventory for variant ${variant.id}:`, error);
+            // 不抛出错误，避免影响产品更新流程
         }
     }
 
@@ -527,15 +594,36 @@ export class ShopifyService {
         try {
             const client = this.getRestClient(session);
 
+            logger.info(`Setting inventory for item ${inventoryItemId} to ${quantity} (from env: ${process.env.SHOPIFY_DEFAULT_PRODUCT_INVENTORY})`);
+
             // 获取位置列表
             const locationsResponse = await client.get({
                 path: 'locations'
             });
 
             const locations = locationsResponse.body?.locations || [];
+            logger.info(`Found ${locations.length} locations:`, locations.map((loc: any) => ({ id: loc.id, name: loc.name, active: loc.active, legacy: loc.legacy })));
 
             if (locations.length > 0) {
-                const locationId = locations[0].id;
+                // 优先选择非履行服务的主要位置
+                let targetLocation = locations.find((location: any) =>
+                    location.active &&
+                    !location.legacy &&
+                    location.name !== 'Fulfillment Service'
+                );
+
+                // 如果没有找到非履行服务位置，则使用第一个活跃位置
+                if (!targetLocation) {
+                    targetLocation = locations.find((location: any) => location.active);
+                }
+
+                // 如果还是没有找到，使用第一个位置
+                if (!targetLocation) {
+                    targetLocation = locations[0];
+                }
+
+                const locationId = targetLocation.id;
+                logger.info(`Using location: ${targetLocation.name} (ID: ${locationId})`);
 
                 await client.post({
                     path: 'inventory_levels/set',
@@ -546,11 +634,14 @@ export class ShopifyService {
                     }
                 });
 
-                logger.info(`Set inventory for item ${inventoryItemId} to ${quantity} at location ${locationId}`);
+                logger.info(`Successfully set inventory for item ${inventoryItemId} to ${quantity} at location ${locationId} (${targetLocation.name})`);
+            } else {
+                logger.warn(`No locations found for setting inventory`);
             }
 
         } catch (error) {
-            logger.error(`Error setting inventory for item ${inventoryItemId}:`, error);
+            logger.error(`Error setting inventory for item ${inventoryItemId} to ${quantity}:`, error);
+            // 不抛出错误，避免影响产品创建流程
         }
     }
 
@@ -645,5 +736,32 @@ export class ShopifyService {
      */
     getShopifyApi() {
         return this.shopify;
+    }
+
+    /**
+     * 检查产品是否存在于Shopify
+     */
+    async checkProductExists(session: Session, productId: string): Promise<{ exists: boolean; product?: any }> {
+        try {
+            const client = this.getRestClient(session);
+
+            const response = await client.get({
+                path: `products/${productId}`
+            });
+
+            if (response.body?.product) {
+                return { exists: true, product: response.body.product };
+            } else {
+                return { exists: false };
+            }
+
+        } catch (error: any) {
+            // 检查是否是404错误（产品不存在）
+            if (error.response?.code === 404 || error.message?.includes('404')) {
+                return { exists: false };
+            }
+            // 重新抛出其他错误
+            throw error;
+        }
     }
 } 
