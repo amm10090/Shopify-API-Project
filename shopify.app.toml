@@ -3,7 +3,7 @@
 client_id = "22c17ecd1ecf677dc1c78552e650bd34"
 name = "Product Importer"
 handle = "amm10090-product-importer-v2"
-application_url = "https://brakes-primary-started-buy.trycloudflare.com"
+application_url = "https://basketball-bulk-preparation-fragrance.trycloudflare.com"
 embedded = true
 include_config_on_deploy = true
 
@@ -33,13 +33,13 @@ scopes = "read_inventory,read_orders,read_product_listings,read_products,write_i
 
 [auth]
 redirect_urls = [
-  "https://brakes-primary-started-buy.trycloudflare.com/auth/callback",
-  "https://brakes-primary-started-buy.trycloudflare.com/auth/shopify/callback",
-  "https://brakes-primary-started-buy.trycloudflare.com/api/auth/callback"
+  "https://basketball-bulk-preparation-fragrance.trycloudflare.com/auth/callback",
+  "https://basketball-bulk-preparation-fragrance.trycloudflare.com/auth/shopify/callback",
+  "https://basketball-bulk-preparation-fragrance.trycloudflare.com/api/auth/callback"
 ]
 
 [app_proxy]
-url = "https://brakes-primary-started-buy.trycloudflare.com/apps/amm10090-product-importer-v2"
+url = "https://basketball-bulk-preparation-fragrance.trycloudflare.com/apps/amm10090-product-importer-v2"
 subpath = "proxy"
 prefix = "apps"
 
