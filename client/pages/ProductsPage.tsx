@@ -41,6 +41,8 @@ import {
 import { productApi, brandApi, shopifyApi } from '../services/api';
 import { UnifiedProduct, Brand } from '@shared/types';
 import { ProductDetailModal } from '../components/ProductDetailModal';
+import { ProductEditModal } from '../components/ProductEditModal';
+import { getShopifyProductAdminUrlSync, getShopifyStoreName, isValidShopifyProductId } from '../utils/shopify';
 
 interface ProductsPageProps {
     showToast: (message: string) => void;
@@ -65,6 +67,11 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
     // Product detail modal state
     const [detailModalActive, setDetailModalActive] = useState(false);
     const [selectedProduct, setSelectedProduct] = useState<UnifiedProduct | null>(null);
+
+    // Product edit modal state
+    const [editModalActive, setEditModalActive] = useState(false);
+    const [editingProduct, setEditingProduct] = useState<UnifiedProduct | null>(null);
+    const [editLoading, setEditLoading] = useState(false);
 
     const limit = 20;
 
@@ -117,6 +124,8 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
     // 组件挂载时获取数据
     useEffect(() => {
         fetchBrands();
+        // 预先获取店铺名称以便缓存
+        getShopifyStoreName().catch(console.error);
     }, [fetchBrands]);
 
     useEffect(() => {
@@ -208,6 +217,42 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
             setIsLoading(false);
         }
     }, [showToast, setIsLoading, fetchProducts]);
+
+    // Handle product edit - jump to Shopify if imported, open edit modal if not
+    const handleProductEdit = useCallback((product: UnifiedProduct) => {
+        if (product.importStatus === 'imported' && isValidShopifyProductId(product.shopifyProductId)) {
+            // 跳转到Shopify编辑页面 - 使用标准的Shopify管理后台URL
+            const shopifyUrl = getShopifyProductAdminUrlSync(product.shopifyProductId!);
+            window.open(shopifyUrl, '_blank');
+            showToast(`Opening ${product.title} in Shopify`);
+        } else {
+            // 打开编辑模态框
+            setEditingProduct(product);
+            setEditModalActive(true);
+        }
+    }, [showToast]);
+
+    // Handle saving product edits
+    const handleSaveProductEdit = useCallback(async (productId: string, updates: Partial<UnifiedProduct>) => {
+        setEditLoading(true);
+        try {
+            const response = await productApi.updateProduct(productId, updates);
+
+            if (response.success) {
+                showToast('Product updated successfully');
+                setEditModalActive(false);
+                setEditingProduct(null);
+                fetchProducts(); // 刷新产品列表
+            } else {
+                showToast(response.error || 'Failed to update product');
+            }
+        } catch (error) {
+            console.error('Error updating product:', error);
+            showToast('Failed to update product');
+        } finally {
+            setEditLoading(false);
+        }
+    }, [showToast, fetchProducts]);
 
     const getStatusBadge = (status: string) => {
         const statusConfig = {
@@ -816,7 +861,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                                                         size="slim"
                                                                         icon={EditIcon}
                                                                         variant="tertiary"
-                                                                        onClick={() => showToast(`Editing ${product.title}`)}
+                                                                        onClick={() => handleProductEdit(product)}
                                                                     />
                                                                 </Tooltip>
                                                                 {product.importStatus === 'pending' && (
@@ -940,6 +985,20 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                     }}
                     onImport={handleSingleImport}
                     isImporting={importProgress[selectedProduct.id] || false}
+                />
+            )}
+
+            {/* Product edit modal */}
+            {editModalActive && editingProduct && (
+                <ProductEditModal
+                    product={editingProduct}
+                    open={editModalActive}
+                    onClose={() => {
+                        setEditModalActive(false);
+                        setEditingProduct(null);
+                    }}
+                    onSave={handleSaveProductEdit}
+                    isLoading={editLoading}
                 />
             )}
         </Page>

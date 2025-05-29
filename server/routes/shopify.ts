@@ -142,15 +142,15 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
                     if (collection) {
                         await shopifyService.addProductToCollection(
                             session,
-                            shopifyProduct.id,
-                            collection.id
+                            String(shopifyProduct.id),
+                            String(collection.id)
                         );
                     }
 
                     // 设置联盟链接元字段
                     await shopifyService.setProductMetafield(
                         session,
-                        shopifyProduct.id,
+                        String(shopifyProduct.id),
                         'custom',
                         'affiliate_link',
                         product.affiliateUrl,
@@ -161,7 +161,7 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
                     await prisma.product.update({
                         where: { id: productId },
                         data: {
-                            shopifyProductId: shopifyProduct.id,
+                            shopifyProductId: String(shopifyProduct.id),
                             importStatus: 'IMPORTED',
                             lastUpdated: new Date()
                         }
@@ -294,7 +294,7 @@ router.post('/sync/:productId', async (req: Request, res: Response, next: NextFu
             // 更新联盟链接元字段
             await shopifyService.setProductMetafield(
                 session,
-                product.shopifyProductId,
+                String(shopifyProduct.id),
                 'custom',
                 'affiliate_link',
                 product.affiliateUrl,

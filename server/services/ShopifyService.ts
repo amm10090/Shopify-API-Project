@@ -2,16 +2,28 @@ import { shopifyApi, ApiVersion, Session } from '@shopify/shopify-api';
 import '@shopify/shopify-api/adapters/node';
 import { logger } from '@server/utils/logger';
 import { UnifiedProduct, ShopifyProduct } from '@shared/types/index';
+import { CustomAppService } from '@server/services/CustomAppService';
 
 export class ShopifyService {
     private shopify: any;
+    private isCustomApp: boolean;
 
     constructor() {
+        // 检查是否为自定义应用模式
+        this.isCustomApp = CustomAppService.isCustomAppMode();
+
         // 检查必需的环境变量
-        const requiredEnvVars = {
-            SHOPIFY_API_KEY: process.env.SHOPIFY_API_KEY,
-            SHOPIFY_API_SECRET: process.env.SHOPIFY_API_SECRET
-        };
+        const requiredEnvVars: { [key: string]: string | undefined } = {};
+
+        if (this.isCustomApp) {
+            // 自定义应用需要的环境变量
+            requiredEnvVars.SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+            requiredEnvVars.SHOPIFY_STORE_NAME = process.env.SHOPIFY_STORE_NAME;
+        } else {
+            // OAuth 应用需要的环境变量
+            requiredEnvVars.SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY;
+            requiredEnvVars.SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET;
+        }
 
         for (const [key, value] of Object.entries(requiredEnvVars)) {
             if (!value) {
@@ -19,25 +31,64 @@ export class ShopifyService {
             }
         }
 
-        this.shopify = shopifyApi({
-            apiKey: process.env.SHOPIFY_API_KEY!,
-            apiSecretKey: process.env.SHOPIFY_API_SECRET!,
-            scopes: [
-                'read_products',
-                'write_products',
-                'read_inventory',
-                'write_inventory',
-                'read_product_listings',
-                'write_product_listings',
-                'read_collections',
-                'write_collections'
-            ],
-            hostName: process.env.SHOPIFY_HOST_NAME || 'localhost:3000',
-            apiVersion: ApiVersion.July24,
-            isEmbeddedApp: true,
-        });
+        if (this.isCustomApp) {
+            // 为自定义应用创建 shopifyApi 实例
+            this.shopify = shopifyApi({
+                apiKey: process.env.SHOPIFY_API_KEY || 'dummy-key', // 自定义应用可能不需要，但API要求
+                apiSecretKey: process.env.SHOPIFY_API_SECRET || 'dummy-secret',
+                scopes: [
+                    'read_products',
+                    'write_products',
+                    'read_inventory',
+                    'write_inventory',
+                    'read_product_listings',
+                    'write_product_listings',
+                    'read_collections',
+                    'write_collections'
+                ],
+                hostName: process.env.SHOPIFY_HOST_NAME || 'localhost:3000',
+                apiVersion: ApiVersion.July24,
+                isEmbeddedApp: false, // 自定义应用不是嵌入式应用
+            });
+
+            logger.info('ShopifyService initialized for custom app mode');
+        } else {
+            // OAuth 应用配置
+            this.shopify = shopifyApi({
+                apiKey: process.env.SHOPIFY_API_KEY!,
+                apiSecretKey: process.env.SHOPIFY_API_SECRET!,
+                scopes: [
+                    'read_products',
+                    'write_products',
+                    'read_inventory',
+                    'write_inventory',
+                    'read_product_listings',
+                    'write_product_listings',
+                    'read_collections',
+                    'write_collections'
+                ],
+                hostName: process.env.SHOPIFY_HOST_NAME || 'localhost:3000',
+                apiVersion: ApiVersion.July24,
+                isEmbeddedApp: true,
+            });
+
+            logger.info('ShopifyService initialized for OAuth app mode');
+        }
 
         logger.info('ShopifyService initialized successfully');
+    }
+
+    /**
+     * 获取或创建 REST 客户端
+     */
+    private getRestClient(session: Session) {
+        if (this.isCustomApp) {
+            // 对于自定义应用，使用 REST 客户端的不同方式
+            return new this.shopify.clients.Rest({ session });
+        } else {
+            // 对于 OAuth 应用，使用标准方式
+            return new this.shopify.clients.Rest({ session });
+        }
     }
 
     /**
@@ -61,15 +112,19 @@ export class ShopifyService {
                 }
             }
 
-            // 使用 REST API 查找现有集合
-            const collectionsResponse = await this.shopify.rest.CustomCollection.all({
-                session,
-                limit: 250
+            // 使用 REST 客户端查找现有集合
+            const client = this.getRestClient(session);
+
+            const collectionsResponse = await client.get({
+                path: 'custom_collections',
+                query: { limit: '250' }
             });
 
-            let existingCollection = collectionsResponse.data.find((coll: any) => coll.handle === handle);
+            const collections = collectionsResponse.body?.custom_collections || [];
+
+            let existingCollection = collections.find((coll: any) => coll.handle === handle);
             if (!existingCollection) {
-                existingCollection = collectionsResponse.data.find((coll: any) => coll.title === title);
+                existingCollection = collections.find((coll: any) => coll.title === title);
             }
 
             if (existingCollection) {
@@ -93,7 +148,10 @@ export class ShopifyService {
                 }
 
                 if (needsUpdate) {
-                    await existingCollection.save({ update: true });
+                    await client.put({
+                        path: `custom_collections/${existingCollection.id}`,
+                        data: { custom_collection: existingCollection }
+                    });
                     logger.info(`Updated collection: ${existingCollection.title} (ID: ${existingCollection.id})`);
                 }
 
@@ -101,16 +159,23 @@ export class ShopifyService {
             }
 
             // 创建新集合
-            const collection = new this.shopify.rest.CustomCollection({ session });
-            collection.title = title;
-            collection.handle = handle;
-            collection.body_html = bodyHtml;
-            collection.published = published;
+            const collectionData: any = {
+                title,
+                handle,
+                body_html: bodyHtml,
+                published
+            };
+
             if (published) {
-                collection.published_at = new Date().toISOString();
+                collectionData.published_at = new Date().toISOString();
             }
 
-            await collection.save();
+            const response = await client.post({
+                path: 'custom_collections',
+                data: { custom_collection: collectionData }
+            });
+
+            const collection = response.body?.custom_collection;
             logger.info(`Created collection: ${collection.title} (ID: ${collection.id})`);
             return collection;
 
@@ -125,11 +190,19 @@ export class ShopifyService {
      */
     async addProductToCollection(session: Session, productId: string, collectionId: string): Promise<any> {
         try {
-            const collect = new this.shopify.rest.Collect({ session });
-            collect.product_id = productId;
-            collect.collection_id = collectionId;
+            const client = this.getRestClient(session);
 
-            await collect.save();
+            const response = await client.post({
+                path: 'collects',
+                data: {
+                    collect: {
+                        product_id: productId,
+                        collection_id: collectionId
+                    }
+                }
+            });
+
+            const collect = response.body?.collect;
             logger.info(`Added product ${productId} to collection ${collectionId}`);
             return collect;
 
@@ -163,27 +236,29 @@ export class ShopifyService {
             }
 
             // 验证shopify实例
-            if (!this.shopify || !this.shopify.rest) {
+            if (!this.shopify) {
                 throw new Error('Shopify API instance not properly initialized');
-            }
-
-            if (!this.shopify.rest.Product) {
-                throw new Error('Shopify Product API not available');
             }
 
             logger.info(`Searching for product with SKU: ${sku} in shop: ${session.shop}`);
 
-            const products = await this.shopify.rest.Product.all({
-                session,
-                limit: 250
+            // 使用 REST 客户端而不是直接检查 this.shopify.rest.Product
+            const client = this.getRestClient(session);
+
+            // 使用 REST 客户端获取产品列表
+            const response = await client.get({
+                path: 'products',
+                query: { limit: '250' }
             });
 
-            if (!products || !products.data) {
-                logger.warn(`No products data returned for shop: ${session.shop}`);
+            const products = response.body?.products || [];
+
+            if (!products || products.length === 0) {
+                logger.warn(`No products found in shop: ${session.shop}`);
                 return null;
             }
 
-            for (const product of products.data) {
+            for (const product of products) {
                 if (!product.variants) {
                     continue;
                 }
@@ -206,8 +281,7 @@ export class ShopifyService {
                 shop: session?.shop,
                 hasAccessToken: !!session?.accessToken,
                 hasShopifyInstance: !!this.shopify,
-                hasRestAPI: !!this.shopify?.rest,
-                hasProductAPI: !!this.shopify?.rest?.Product
+                isCustomApp: this.isCustomApp
             });
             throw error;
         }
@@ -220,18 +294,21 @@ export class ShopifyService {
         try {
             logger.info(`Creating Shopify product: SKU='${unifiedProduct.sku}', Title='${unifiedProduct.title}'`);
 
-            const product = new this.shopify.rest.Product({ session });
-            product.title = unifiedProduct.title;
-            product.body_html = unifiedProduct.description;
-            product.vendor = unifiedProduct.brandName;
-            product.product_type = unifiedProduct.categories[0] || '';
+            const client = this.getRestClient(session);
+
+            const productData: any = {
+                title: unifiedProduct.title,
+                body_html: unifiedProduct.description,
+                vendor: unifiedProduct.brandName,
+                product_type: unifiedProduct.categories[0] || ''
+            };
 
             if (status === 'draft') {
-                product.published_at = null;
-                product.published_scope = 'web';
+                productData.published_at = null;
+                productData.published_scope = 'web';
             } else if (status === 'active') {
-                product.published_at = new Date().toISOString();
-                product.published_scope = 'web';
+                productData.published_at = new Date().toISOString();
+                productData.published_scope = 'web';
             }
 
             // 创建变体
@@ -248,14 +325,19 @@ export class ShopifyService {
                 variantData.price = unifiedProduct.salePrice.toString();
             }
 
-            product.variants = [variantData];
+            productData.variants = [variantData];
 
             // 添加图片
             if (unifiedProduct.imageUrl) {
-                product.images = [{ src: unifiedProduct.imageUrl }];
+                productData.images = [{ src: unifiedProduct.imageUrl }];
             }
 
-            await product.save();
+            const response = await client.post({
+                path: 'products',
+                data: { product: productData }
+            });
+
+            const product = response.body?.product;
             logger.info(`Created product: ${product.title} (ID: ${product.id})`);
 
             // 设置库存
@@ -278,10 +360,14 @@ export class ShopifyService {
         try {
             logger.info(`Updating Shopify product ID: ${productId}`);
 
-            const product = await this.shopify.rest.Product.find({
-                session,
-                id: productId
+            const client = this.getRestClient(session);
+
+            // 获取现有产品
+            const getResponse = await client.get({
+                path: `products/${productId}`
             });
+
+            const product = getResponse.body?.product;
 
             if (!product) {
                 throw new Error(`Product with ID ${productId} not found`);
@@ -289,19 +375,20 @@ export class ShopifyService {
 
             // 更新产品信息
             let changed = false;
+            const updateData: any = {};
 
             if (product.title !== unifiedProduct.title) {
-                product.title = unifiedProduct.title;
+                updateData.title = unifiedProduct.title;
                 changed = true;
             }
 
             if (product.body_html !== unifiedProduct.description) {
-                product.body_html = unifiedProduct.description;
+                updateData.body_html = unifiedProduct.description;
                 changed = true;
             }
 
             if (product.vendor !== unifiedProduct.brandName) {
-                product.vendor = unifiedProduct.brandName;
+                updateData.vendor = unifiedProduct.brandName;
                 changed = true;
             }
 
@@ -312,21 +399,32 @@ export class ShopifyService {
                     ? unifiedProduct.salePrice.toString()
                     : unifiedProduct.price.toString();
 
+                const variantUpdateData: any = {};
+                let variantChanged = false;
+
                 if (variant.price !== targetPrice) {
-                    variant.price = targetPrice;
-                    changed = true;
+                    variantUpdateData.price = targetPrice;
+                    variantChanged = true;
                 }
 
                 if (unifiedProduct.salePrice && unifiedProduct.salePrice < unifiedProduct.price) {
                     if (variant.compare_at_price !== unifiedProduct.price.toString()) {
-                        variant.compare_at_price = unifiedProduct.price.toString();
-                        changed = true;
+                        variantUpdateData.compare_at_price = unifiedProduct.price.toString();
+                        variantChanged = true;
                     }
                 } else {
                     if (variant.compare_at_price) {
-                        variant.compare_at_price = null;
-                        changed = true;
+                        variantUpdateData.compare_at_price = null;
+                        variantChanged = true;
                     }
+                }
+
+                if (variantChanged) {
+                    await client.put({
+                        path: `variants/${variant.id}`,
+                        data: { variant: variantUpdateData }
+                    });
+                    changed = true;
                 }
             }
 
@@ -334,13 +432,16 @@ export class ShopifyService {
             if (unifiedProduct.imageUrl) {
                 const currentImageSrc = product.images && product.images[0] ? product.images[0].src : null;
                 if (currentImageSrc !== unifiedProduct.imageUrl) {
-                    product.images = [{ src: unifiedProduct.imageUrl }];
+                    updateData.images = [{ src: unifiedProduct.imageUrl }];
                     changed = true;
                 }
             }
 
-            if (changed) {
-                await product.save({ update: true });
+            if (changed && Object.keys(updateData).length > 0) {
+                await client.put({
+                    path: `products/${productId}`,
+                    data: { product: updateData }
+                });
                 logger.info(`Updated product: ${product.title} (ID: ${product.id})`);
             } else {
                 logger.info(`No changes needed for product: ${product.title} (ID: ${product.id})`);
@@ -366,37 +467,49 @@ export class ShopifyService {
         valueType: string
     ): Promise<any> {
         try {
+            const client = this.getRestClient(session);
+
             // 查找现有元字段
-            const metafields = await this.shopify.rest.Metafield.all({
-                session,
-                metafield: {
-                    owner_id: productId,
-                    owner_resource: 'product'
-                }
+            const metafieldsResponse = await client.get({
+                path: `products/${productId}/metafields`
             });
 
-            const existingMetafield = metafields.data.find(
+            const metafields = metafieldsResponse.body?.metafields || [];
+
+            const existingMetafield = metafields.find(
                 (mf: any) => mf.namespace === namespace && mf.key === key
             );
 
             if (existingMetafield) {
                 // 更新现有元字段
-                existingMetafield.value = value;
-                existingMetafield.type = valueType;
-                await existingMetafield.save({ update: true });
+                const response = await client.put({
+                    path: `metafields/${existingMetafield.id}`,
+                    data: {
+                        metafield: {
+                            value: value,
+                            type: valueType
+                        }
+                    }
+                });
+
+                const metafield = response.body?.metafield;
                 logger.info(`Updated metafield for product ${productId}: ${namespace}.${key}`);
-                return existingMetafield;
+                return metafield;
             } else {
                 // 创建新元字段
-                const metafield = new this.shopify.rest.Metafield({ session });
-                metafield.namespace = namespace;
-                metafield.key = key;
-                metafield.value = value;
-                metafield.type = valueType;
-                metafield.owner_id = productId;
-                metafield.owner_resource = 'product';
+                const response = await client.post({
+                    path: `products/${productId}/metafields`,
+                    data: {
+                        metafield: {
+                            namespace: namespace,
+                            key: key,
+                            value: value,
+                            type: valueType
+                        }
+                    }
+                });
 
-                await metafield.save();
+                const metafield = response.body?.metafield;
                 logger.info(`Created metafield for product ${productId}: ${namespace}.${key}`);
                 return metafield;
             }
@@ -412,18 +525,25 @@ export class ShopifyService {
      */
     private async setInventory(session: Session, inventoryItemId: string, quantity: number): Promise<void> {
         try {
-            const locations = await this.shopify.rest.Location.all({
-                session
+            const client = this.getRestClient(session);
+
+            // 获取位置列表
+            const locationsResponse = await client.get({
+                path: 'locations'
             });
 
-            if (locations.data.length > 0) {
-                const locationId = locations.data[0].id;
+            const locations = locationsResponse.body?.locations || [];
 
-                await this.shopify.rest.InventoryLevel.set({
-                    session,
-                    location_id: locationId,
-                    inventory_item_id: inventoryItemId,
-                    available: quantity
+            if (locations.length > 0) {
+                const locationId = locations[0].id;
+
+                await client.post({
+                    path: 'inventory_levels/set',
+                    data: {
+                        location_id: locationId,
+                        inventory_item_id: inventoryItemId,
+                        available: quantity
+                    }
                 });
 
                 logger.info(`Set inventory for item ${inventoryItemId} to ${quantity} at location ${locationId}`);
@@ -439,10 +559,14 @@ export class ShopifyService {
      */
     async setProductStatus(session: Session, productId: string, status: 'active' | 'draft'): Promise<boolean> {
         try {
-            const product = await this.shopify.rest.Product.find({
-                session,
-                id: productId
+            const client = this.getRestClient(session);
+
+            // 获取现有产品
+            const getResponse = await client.get({
+                path: `products/${productId}`
             });
+
+            const product = getResponse.body?.product;
 
             if (!product) {
                 logger.error(`Product ${productId} not found for status update`);
@@ -451,22 +575,26 @@ export class ShopifyService {
 
             const currentPublishedAt = product.published_at;
             let changed = false;
+            const updateData: any = {};
 
             if (status === 'active') {
                 if (!currentPublishedAt) {
-                    product.published_at = new Date().toISOString();
-                    product.published_scope = 'web';
+                    updateData.published_at = new Date().toISOString();
+                    updateData.published_scope = 'web';
                     changed = true;
                 }
             } else if (status === 'draft') {
                 if (currentPublishedAt) {
-                    product.published_at = null;
+                    updateData.published_at = null;
                     changed = true;
                 }
             }
 
             if (changed) {
-                await product.save({ update: true });
+                await client.put({
+                    path: `products/${productId}`,
+                    data: { product: updateData }
+                });
                 logger.info(`Set product ${productId} status to '${status}'`);
             } else {
                 logger.info(`Product ${productId} already has status '${status}'`);
@@ -485,19 +613,22 @@ export class ShopifyService {
      */
     async deleteProduct(session: Session, productId: string): Promise<boolean> {
         try {
-            const product = await this.shopify.rest.Product.find({
-                session,
-                id: productId
+            const client = this.getRestClient(session);
+
+            // 检查产品是否存在
+            const getResponse = await client.get({
+                path: `products/${productId}`
             });
+
+            const product = getResponse.body?.product;
 
             if (!product) {
                 logger.error(`Product ${productId} not found for deletion`);
                 return false;
             }
 
-            await this.shopify.rest.Product.delete({
-                session,
-                id: productId
+            await client.delete({
+                path: `products/${productId}`
             });
 
             logger.info(`Deleted product ${productId}`);

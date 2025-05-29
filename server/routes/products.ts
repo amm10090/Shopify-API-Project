@@ -343,6 +343,106 @@ router.patch('/:id/status', async (req: Request, res: Response, next: NextFuncti
 });
 
 /**
+ * 更新产品信息
+ */
+router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const {
+            title,
+            description,
+            price,
+            salePrice,
+            currency,
+            imageUrl,
+            availability,
+            categories,
+            sku
+        } = req.body;
+
+        // 验证必需字段
+        if (title !== undefined && !title.trim()) {
+            res.status(400).json({
+                success: false,
+                error: 'Title cannot be empty'
+            });
+            return;
+        }
+
+        if (price !== undefined && (isNaN(price) || price < 0)) {
+            res.status(400).json({
+                success: false,
+                error: 'Price must be a valid positive number'
+            });
+            return;
+        }
+
+        // 检查产品是否存在
+        const existingProduct = await prisma.product.findUnique({
+            where: { id: req.params.id }
+        });
+
+        if (!existingProduct) {
+            res.status(404).json({
+                success: false,
+                error: 'Product not found'
+            });
+            return;
+        }
+
+        // 构建更新数据
+        const updateData: any = {
+            lastUpdated: new Date()
+        };
+
+        if (title !== undefined) updateData.title = title.trim();
+        if (description !== undefined) updateData.description = description.trim();
+        if (price !== undefined) updateData.price = parseFloat(price);
+        if (salePrice !== undefined) updateData.salePrice = salePrice ? parseFloat(salePrice) : null;
+        if (currency !== undefined) updateData.currency = currency;
+        if (imageUrl !== undefined) updateData.imageUrl = imageUrl.trim();
+        if (availability !== undefined) updateData.availability = Boolean(availability);
+        if (categories !== undefined) updateData.categories = Array.isArray(categories) ? categories : [];
+        if (sku !== undefined) updateData.sku = sku.trim();
+
+        const updatedProduct = await prisma.product.update({
+            where: { id: req.params.id },
+            data: updateData,
+            include: { brand: true }
+        });
+
+        // 转换为UnifiedProduct格式
+        const unifiedProduct: UnifiedProduct = {
+            id: updatedProduct.id,
+            sourceApi: updatedProduct.sourceApi.toLowerCase() as 'cj' | 'pepperjam',
+            sourceProductId: updatedProduct.sourceProductId,
+            brandName: updatedProduct.brand.name,
+            title: updatedProduct.title,
+            description: updatedProduct.description,
+            price: updatedProduct.price,
+            salePrice: updatedProduct.salePrice || undefined,
+            currency: updatedProduct.currency,
+            imageUrl: updatedProduct.imageUrl,
+            affiliateUrl: updatedProduct.affiliateUrl,
+            categories: updatedProduct.categories,
+            availability: updatedProduct.availability,
+            shopifyProductId: updatedProduct.shopifyProductId || undefined,
+            importStatus: updatedProduct.importStatus.toLowerCase() as 'pending' | 'imported' | 'failed',
+            lastUpdated: updatedProduct.lastUpdated,
+            keywordsMatched: updatedProduct.keywordsMatched,
+            sku: updatedProduct.sku || undefined
+        };
+
+        res.json({
+            success: true,
+            data: unifiedProduct,
+            message: 'Product updated successfully'
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
  * 删除产品
  */
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {

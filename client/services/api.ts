@@ -78,6 +78,11 @@ export const productApi = {
         return api.patch(`/products/${id}/status`, { importStatus });
     },
 
+    // 更新产品信息
+    updateProduct: async (id: string, updates: Partial<UnifiedProduct>): Promise<ApiResponse<UnifiedProduct>> => {
+        return api.put(`/products/${id}`, updates);
+    },
+
     // 删除产品
     deleteProduct: async (id: string): Promise<ApiResponse<void>> => {
         return api.delete(`/products/${id}`);
