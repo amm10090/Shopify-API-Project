@@ -841,4 +841,123 @@ router.post('/sync-status', async (req: Request, res: Response, next: NextFuncti
     }
 });
 
+/**
+ * 同步产品库存状态
+ * POST /api/shopify/sync-inventory
+ */
+router.post('/sync-inventory', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { productIds } = req.body;
+
+        // 获取当前会话
+        const session = (req as any).shopifySession;
+
+        if (!session) {
+            res.status(401).json({
+                success: false,
+                error: 'No valid Shopify session found. Please authenticate first.'
+            });
+            return;
+        }
+
+        if (!session.accessToken) {
+            res.status(401).json({
+                success: false,
+                error: 'Session access token is missing. Please re-authenticate.'
+            });
+            return;
+        }
+
+        // 如果没有指定产品ID，同步所有已导入的产品
+        const whereCondition = productIds && Array.isArray(productIds) && productIds.length > 0
+            ? { id: { in: productIds }, importStatus: 'IMPORTED' as const }
+            : { importStatus: 'IMPORTED' as const, shopifyProductId: { not: null } };
+
+        const importedProducts = await prisma.product.findMany({
+            where: whereCondition,
+            include: { brand: true }
+        });
+
+        logger.info(`Syncing inventory for ${importedProducts.length} products`);
+
+        const results = {
+            checked: 0,
+            synced: 0,
+            errors: [] as Array<{ productId: string; error: string }>
+        };
+
+        for (const product of importedProducts) {
+            try {
+                if (!product.shopifyProductId) {
+                    continue;
+                }
+
+                logger.info(`Syncing inventory for product: ${product.shopifyProductId}, availability: ${product.availability}`);
+
+                // 检查产品是否存在
+                const checkResult = await shopifyService.checkProductExists(session, product.shopifyProductId);
+
+                if (!checkResult.exists) {
+                    // 产品不存在，更新数据库状态
+                    await prisma.product.update({
+                        where: { id: product.id },
+                        data: {
+                            shopifyProductId: null,
+                            importStatus: 'PENDING',
+                            lastUpdated: new Date()
+                        }
+                    });
+
+                    logger.info(`Product ${product.shopifyProductId} no longer exists in Shopify, marked as pending`);
+                    results.errors.push({
+                        productId: product.id,
+                        error: 'Product no longer exists in Shopify'
+                    });
+                    continue;
+                }
+
+                const shopifyProduct = checkResult.product;
+
+                // 同步库存状态
+                const syncResult = await shopifyService.syncInventoryForProduct(
+                    session,
+                    shopifyProduct,
+                    product.availability
+                );
+
+                if (syncResult.synced) {
+                    results.synced++;
+                    logger.info(`Successfully synced inventory for product ${product.shopifyProductId}`);
+                } else if (syncResult.error) {
+                    results.errors.push({
+                        productId: product.id,
+                        error: syncResult.error
+                    });
+                }
+
+                results.checked++;
+
+            } catch (error) {
+                logger.error(`Error syncing inventory for product ${product.id}:`, error);
+                results.errors.push({
+                    productId: product.id,
+                    error: error instanceof Error ? error.message : 'Unknown error'
+                });
+            }
+        }
+
+        logger.info(`Inventory sync completed: ${results.checked} checked, ${results.synced} synced, ${results.errors.length} errors`);
+
+        res.json({
+            success: true,
+            data: results,
+            message: `Inventory sync completed: ${results.synced} products synced`
+        });
+
+    } catch (error) {
+        logger.error('Error in inventory sync:', error);
+        next(error);
+    }
+});
+
 export default router; 

@@ -259,43 +259,50 @@ export class ProductRetriever {
 
                 const currentLimit = validation.adjustedLimit;
 
-                // 构建GraphQL查询 - 使用offset和limit进行分页
+                // 构建关键词搜索查询 - CJ API不支持直接搜索，我们获取更多数据然后过滤
+                if (params.keywords && params.keywords.length > 0) {
+                    logger.info(`Will filter CJ API results for keywords: ${params.keywords.join(', ')}`);
+                }
+
+                // 获取更多数据以便更好地匹配
+                const adjustedLimit = Math.min(params.limit ? params.limit * 5 : 250, 500);
+
+                // 使用与fetchCJProducts相同的GraphQL查询结构
                 const query = `
-                     {
-                         products(
-                             companyId: "${companyId}", 
-                             partnerIds: ["${advertiserId}"], 
-                             limit: ${currentLimit},
-                             offset: ${page.offset}
-                         ) {
-                             totalCount
-                             count
-                             resultList {
-                                 advertiserId
-                                 advertiserName
-                                 id
-                                 title
-                                 description
-                                 price {
-                                     amount
-                                     currency
-                                 }
-                                 imageLink
-                                 link
-                                 brand
-                                 lastUpdated
-                                 ... on Shopping {
-                                     availability
-                                     productType
-                                     googleProductCategory {
-                                         id
-                                         name
-                                     }
-                                 }
-                             }
-                         }
-                     }
-                 `;
+                    {
+                        products(
+                            companyId: "${companyId}", 
+                            partnerIds: ["${params.advertiserId}"], 
+                            limit: ${adjustedLimit}
+                        ) {
+                            totalCount
+                            count
+                            resultList {
+                                advertiserId
+                                advertiserName
+                                id
+                                title
+                                description
+                                price {
+                                    amount
+                                    currency
+                                }
+                                imageLink
+                                link
+                                brand
+                                lastUpdated
+                                ... on Shopping {
+                                    availability
+                                    productType
+                                    googleProductCategory {
+                                        id
+                                        name
+                                    }
+                                }
+                            }
+                        }
+                    }
+                `;
 
                 logger.debug(`CJ API request page ${pageCount + 1}: offset=${page.offset}, limit=${currentLimit}`);
                 logger.debug(`CJ API query:`, query);
@@ -448,9 +455,12 @@ export class ProductRetriever {
         const companyId = process.env.CJ_CID || process.env.BRAND_CID || '7520009';
         logger.debug(`Using CJ Company ID: ${companyId}`);
 
-        const limit = Math.min(params.limit || 50, 100);
+        // 获取更多数据以便更好地匹配
+        const limit = Math.min(params.limit ? params.limit * 3 : 150, 300);
 
-        // 使用与fetchCJProducts相同的GraphQL查询结构
+        logger.info(`Fetching CJ raw products for advertiser ${params.advertiserId}, limit: ${limit}${params.keywords ? `, keywords: ${params.keywords.join(', ')}` : ''}`);
+
+        // 简化的GraphQL查询，不使用searchTerm参数
         const query = `
             {
                 products(
@@ -506,9 +516,29 @@ export class ProductRetriever {
             }
 
             const products = response.data.data?.products?.resultList || [];
-            logger.info(`CJ API returned ${products.length} raw products for advertiser ${params.advertiserId}`);
 
-            return products;
+            // 如果有关键词，在客户端进行过滤
+            let filteredProducts = products;
+            if (params.keywords && params.keywords.length > 0) {
+                filteredProducts = products.filter((product: any) => {
+                    const title = (product.title || '').toLowerCase();
+                    const description = (product.description || '').toLowerCase();
+                    const brand = (product.brand || '').toLowerCase();
+
+                    return params.keywords!.some(keyword => {
+                        const keywordLower = keyword.toLowerCase();
+                        return title.includes(keywordLower) ||
+                            description.includes(keywordLower) ||
+                            brand.includes(keywordLower);
+                    });
+                });
+
+                logger.info(`CJ API returned ${products.length} total products, filtered to ${filteredProducts.length} matching keywords`);
+            } else {
+                logger.info(`CJ API returned ${products.length} raw products for advertiser ${params.advertiserId}`);
+            }
+
+            return filteredProducts;
 
         } catch (error) {
             logger.error('Error fetching CJ products raw data:', error);

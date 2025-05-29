@@ -17,6 +17,7 @@ import {
 } from '@shopify/polaris';
 import { ImportIcon, ExternalIcon, EditIcon, CodeIcon } from '@shopify/polaris-icons';
 import { UnifiedProduct } from '@shared/types';
+import { getProductRawData } from '../services/api';
 
 interface ProductDetailModalProps {
     product: UnifiedProduct | null;
@@ -52,14 +53,8 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
 
         setLoadingApiData(true);
         try {
-            const response = await fetch(`/api/products/${product.id}/raw-data`);
-            const result = await response.json();
-
-            if (result.success) {
-                setApiData(result.data);
-            } else {
-                console.error('Failed to fetch API data:', result.error);
-            }
+            const rawData = await getProductRawData(product.id);
+            setApiData(rawData);
         } catch (error) {
             console.error('Error fetching API data:', error);
         } finally {

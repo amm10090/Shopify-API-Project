@@ -341,12 +341,14 @@ export class ShopifyService {
             logger.info(`Created product: ${product.title} (ID: ${product.id})`);
 
             // 设置库存
-            if (unifiedProduct.availability && product.variants && product.variants[0]) {
+            if (product.variants && product.variants[0]) {
                 const defaultQuantity = parseInt(process.env.SHOPIFY_DEFAULT_PRODUCT_INVENTORY || '99');
-                logger.info(`Setting inventory for new product ${product.id} with default quantity: ${defaultQuantity} (availability: ${unifiedProduct.availability})`);
-                await this.setInventory(session, product.variants[0].inventory_item_id, defaultQuantity);
+                const targetQuantity = unifiedProduct.availability === false ? 0 : defaultQuantity;
+
+                logger.info(`Setting inventory for new product ${product.id} - availability: ${unifiedProduct.availability}, target quantity: ${targetQuantity}`);
+                await this.setInventory(session, product.variants[0].inventory_item_id, targetQuantity);
             } else {
-                logger.info(`Skipping inventory setup - availability: ${unifiedProduct.availability}, has variants: ${!!(product.variants && product.variants[0])}`);
+                logger.info(`Skipping inventory setup - no variants found for product ${product.id}`);
             }
 
             return product;
@@ -432,7 +434,7 @@ export class ShopifyService {
                 }
 
                 // 检查并更新库存
-                await this.checkAndUpdateInventory(session, variant);
+                await this.checkAndUpdateInventory(session, variant, unifiedProduct.availability);
             }
 
             // 更新图片
@@ -471,9 +473,9 @@ export class ShopifyService {
     }
 
     /**
-     * 检查并更新库存，如果当前库存低于设置的Default Inventory Quantity，则更新
+     * 检查并更新库存，根据availability状态设置合适的库存数量
      */
-    private async checkAndUpdateInventory(session: Session, variant: any): Promise<void> {
+    private async checkAndUpdateInventory(session: Session, variant: any, availability?: boolean): Promise<void> {
         try {
             if (!variant.inventory_item_id) {
                 logger.warn(`Variant ${variant.id} has no inventory_item_id, skipping inventory check`);
@@ -483,7 +485,7 @@ export class ShopifyService {
             const client = this.getRestClient(session);
             const defaultInventoryQuantity = parseInt(process.env.SHOPIFY_DEFAULT_PRODUCT_INVENTORY || '99');
 
-            logger.info(`Checking inventory for variant ${variant.id}, default quantity: ${defaultInventoryQuantity}`);
+            logger.info(`Checking inventory for variant ${variant.id}, availability: ${availability}, default quantity: ${defaultInventoryQuantity}`);
 
             // 获取当前库存级别
             const inventoryResponse = await client.get({
@@ -493,8 +495,9 @@ export class ShopifyService {
             const inventoryLevels = inventoryResponse.body?.inventory_levels || [];
 
             if (inventoryLevels.length === 0) {
-                logger.info(`No inventory levels found for variant ${variant.id}, setting to default quantity: ${defaultInventoryQuantity}`);
-                await this.setInventory(session, variant.inventory_item_id, defaultInventoryQuantity);
+                const targetQuantity = availability === false ? 0 : defaultInventoryQuantity;
+                logger.info(`No inventory levels found for variant ${variant.id}, setting to ${targetQuantity} based on availability: ${availability}`);
+                await this.setInventory(session, variant.inventory_item_id, targetQuantity);
                 return;
             }
 
@@ -506,14 +509,36 @@ export class ShopifyService {
                 }
             }
 
-            logger.info(`Current total inventory for variant ${variant.id}: ${totalInventory}, default: ${defaultInventoryQuantity}`);
+            logger.info(`Current total inventory for variant ${variant.id}: ${totalInventory}, availability: ${availability}`);
 
-            // 如果当前库存低于默认库存，则更新到默认库存
-            if (totalInventory < defaultInventoryQuantity) {
-                logger.info(`Current inventory (${totalInventory}) is below default (${defaultInventoryQuantity}), updating...`);
-                await this.setInventory(session, variant.inventory_item_id, defaultInventoryQuantity);
+            // 根据availability状态决定库存设置策略
+            if (availability === false) {
+                // 产品缺货，将库存设为0
+                if (totalInventory > 0) {
+                    logger.info(`Product marked as out of stock, setting inventory to 0 (was ${totalInventory})`);
+                    await this.setInventory(session, variant.inventory_item_id, 0);
+                } else {
+                    logger.info(`Product already has 0 inventory, no change needed`);
+                }
+            } else if (availability === true) {
+                // 产品有库存，确保库存不为0
+                if (totalInventory === 0) {
+                    logger.info(`Product marked as in stock but has 0 inventory, setting to default quantity: ${defaultInventoryQuantity}`);
+                    await this.setInventory(session, variant.inventory_item_id, defaultInventoryQuantity);
+                } else if (totalInventory < defaultInventoryQuantity) {
+                    logger.info(`Product has low inventory (${totalInventory}), updating to default quantity: ${defaultInventoryQuantity}`);
+                    await this.setInventory(session, variant.inventory_item_id, defaultInventoryQuantity);
+                } else {
+                    logger.info(`Product has sufficient inventory (${totalInventory}), no change needed`);
+                }
             } else {
-                logger.info(`Current inventory (${totalInventory}) is above or equal to default (${defaultInventoryQuantity}), no update needed`);
+                // availability未指定，只检查是否低于默认值（保持原有逻辑）
+                if (totalInventory < defaultInventoryQuantity) {
+                    logger.info(`Current inventory (${totalInventory}) is below default (${defaultInventoryQuantity}), updating...`);
+                    await this.setInventory(session, variant.inventory_item_id, defaultInventoryQuantity);
+                } else {
+                    logger.info(`Current inventory (${totalInventory}) is above or equal to default (${defaultInventoryQuantity}), no update needed`);
+                }
             }
 
         } catch (error) {
@@ -762,6 +787,98 @@ export class ShopifyService {
             }
             // 重新抛出其他错误
             throw error;
+        }
+    }
+
+    /**
+     * 同步单个产品的库存状态
+     */
+    async syncInventoryForProduct(session: Session, shopifyProduct: any, availability: boolean): Promise<{ synced: boolean; error?: string }> {
+        try {
+            if (!shopifyProduct.variants || !shopifyProduct.variants[0]) {
+                return { synced: false, error: 'No variants found' };
+            }
+
+            const variant = shopifyProduct.variants[0];
+
+            if (!variant.inventory_item_id) {
+                return { synced: false, error: 'No inventory_item_id found' };
+            }
+
+            const client = this.getRestClient(session);
+            const defaultInventoryQuantity = parseInt(process.env.SHOPIFY_DEFAULT_PRODUCT_INVENTORY || '99');
+
+            // 获取当前库存
+            const inventoryResponse = await client.get({
+                path: `inventory_levels?inventory_item_ids=${variant.inventory_item_id}`
+            });
+
+            const inventoryLevels = inventoryResponse.body?.inventory_levels || [];
+            let totalInventory = 0;
+
+            for (const level of inventoryLevels) {
+                if (level.available !== null && level.available !== undefined) {
+                    totalInventory += level.available;
+                }
+            }
+
+            let needsUpdate = false;
+            let targetQuantity = totalInventory;
+
+            if (availability === false && totalInventory > 0) {
+                // 产品应该缺货但当前有库存
+                targetQuantity = 0;
+                needsUpdate = true;
+            } else if (availability === true && totalInventory === 0) {
+                // 产品应该有库存但当前缺货
+                targetQuantity = defaultInventoryQuantity;
+                needsUpdate = true;
+            }
+
+            if (needsUpdate) {
+                // 获取位置并设置库存
+                const locationsResponse = await client.get({
+                    path: 'locations'
+                });
+
+                const locations = locationsResponse.body?.locations || [];
+                let targetLocation = locations.find((location: any) =>
+                    location.active &&
+                    !location.legacy &&
+                    location.name !== 'Fulfillment Service'
+                );
+
+                if (!targetLocation) {
+                    targetLocation = locations.find((location: any) => location.active);
+                }
+
+                if (!targetLocation && locations.length > 0) {
+                    targetLocation = locations[0];
+                }
+
+                if (targetLocation) {
+                    await client.post({
+                        path: 'inventory_levels/set',
+                        data: {
+                            location_id: targetLocation.id,
+                            inventory_item_id: variant.inventory_item_id,
+                            available: targetQuantity
+                        }
+                    });
+
+                    logger.info(`Updated inventory for product ${shopifyProduct.id} from ${totalInventory} to ${targetQuantity} (availability: ${availability})`);
+                    return { synced: true };
+                } else {
+                    return { synced: false, error: 'No locations found for inventory update' };
+                }
+            } else {
+                logger.info(`Inventory for product ${shopifyProduct.id} already matches availability status (${totalInventory} units, availability: ${availability})`);
+                return { synced: false }; // 不需要更新
+            }
+
+        } catch (error) {
+            logger.error(`Error syncing inventory for product ${shopifyProduct.id}:`, error);
+            return { synced: false, error: error instanceof Error ? error.message : 'Unknown error' };
         }
     }
 } 

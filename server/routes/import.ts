@@ -94,10 +94,59 @@ router.post('/start', async (req: Request, res: Response, next: NextFunction) =>
 
                 logger.info(`Product fetch completed for brand: ${brand.name}, found ${products.length} products`);
 
+                // 获取原始API数据以保存到数据库
+                let rawProductsData: any[] = [];
+                try {
+                    if (brand.apiType === 'CJ') {
+                        rawProductsData = await productRetriever.fetchCJProductsRaw({
+                            advertiserId: brand.apiId,
+                            keywords: keywordsList,
+                            limit: Math.min(products.length * 2, 200) // 获取更多原始数据以确保匹配
+                        });
+                    } else if (brand.apiType === 'PEPPERJAM') {
+                        rawProductsData = await productRetriever.fetchPepperjamProductsRaw({
+                            programId: brand.apiId,
+                            keywords: keywordsList,
+                            limit: Math.min(products.length * 2, 200)
+                        });
+                    }
+                    logger.info(`Fetched ${rawProductsData.length} raw API products for rawApiData storage`);
+                } catch (error) {
+                    logger.warn(`Failed to fetch raw API data during import:`, error);
+                    rawProductsData = [];
+                }
+
                 // 保存产品到数据库
                 const savedProducts: any[] = [];
                 for (const productData of products) {
                     try {
+                        // 查找对应的原始API数据
+                        let matchedRawData = null;
+                        if (rawProductsData.length > 0) {
+                            matchedRawData = rawProductsData.find((rawProduct: any) => {
+                                // 通过源产品ID匹配
+                                const rawProductId = brand.apiType === 'CJ' ? 
+                                    String(rawProduct.id) : 
+                                    String(rawProduct.id || rawProduct.product_id || rawProduct.sku);
+                                
+                                if (rawProductId === productData.sourceProductId) {
+                                    return true;
+                                }
+
+                                // 通过标题匹配
+                                const rawTitle = brand.apiType === 'CJ' ? 
+                                    (rawProduct.title || '') : 
+                                    (rawProduct.name || rawProduct.title || '');
+                                
+                                const productTitle = productData.title.toLowerCase();
+                                const rawTitleLower = rawTitle.toLowerCase();
+
+                                return rawTitleLower.includes(productTitle) || 
+                                       productTitle.includes(rawTitleLower) ||
+                                       rawTitleLower.replace(/[®™©\s-]/g, '').includes(productTitle.replace(/[®™©\s-]/g, ''));
+                            });
+                        }
+
                         // 检查产品是否已存在
                         const existingProduct = await prisma.product.findFirst({
                             where: {
@@ -107,7 +156,7 @@ router.post('/start', async (req: Request, res: Response, next: NextFunction) =>
                         });
 
                         if (existingProduct) {
-                            // 更新现有产品
+                            // 更新现有产品，包括原始API数据
                             const updatedProduct = await prisma.product.update({
                                 where: { id: existingProduct.id },
                                 data: {
@@ -122,12 +171,13 @@ router.post('/start', async (req: Request, res: Response, next: NextFunction) =>
                                     availability: productData.availability,
                                     keywordsMatched: productData.keywordsMatched || [],
                                     sku: productData.sku,
+                                    rawApiData: matchedRawData, // 保存原始API数据
                                     lastUpdated: new Date()
                                 }
                             });
                             savedProducts.push(updatedProduct);
                         } else {
-                            // 创建新产品
+                            // 创建新产品，包括原始API数据
                             const newProduct = await prisma.product.create({
                                 data: {
                                     sourceApi: productData.sourceApi.toUpperCase(),
@@ -144,6 +194,7 @@ router.post('/start', async (req: Request, res: Response, next: NextFunction) =>
                                     availability: productData.availability,
                                     keywordsMatched: productData.keywordsMatched || [],
                                     sku: productData.sku,
+                                    rawApiData: matchedRawData, // 保存原始API数据
                                     importStatus: 'PENDING'
                                 }
                             });

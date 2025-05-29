@@ -238,6 +238,39 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
         }
     }, [selectedProducts, showToast, setIsLoading, fetchProducts]);
 
+    const handleBulkInventorySync = useCallback(async () => {
+        if (selectedProducts.length === 0) {
+            showToast('Please select products to sync inventory');
+            return;
+        }
+
+        setIsLoading(true);
+        try {
+            const response = await shopifyApi.syncInventory(selectedProducts);
+
+            if (response.success) {
+                const { checked, synced, errors } = response.data;
+
+                if (errors && errors.length > 0) {
+                    showToast(`Inventory sync completed: ${checked} checked, ${synced} synced, ${errors.length} errors. Check console for details.`);
+                    console.error('Inventory sync errors:', errors);
+                } else {
+                    showToast(`Inventory sync completed: ${checked} checked, ${synced} synced`);
+                }
+
+                setSelectedProducts([]);
+                fetchProducts(); // 刷新产品列表
+            } else {
+                showToast(response.error || 'Failed to sync inventory');
+            }
+        } catch (error) {
+            console.error('Error during inventory sync:', error);
+            showToast('Failed to sync inventory');
+        } finally {
+            setIsLoading(false);
+        }
+    }, [selectedProducts, showToast, setIsLoading, fetchProducts]);
+
     const handleBulkDelete = useCallback(async () => {
         setIsLoading(true);
         try {
@@ -768,6 +801,13 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                                         onClick={handleBulkStatusSync}
                                                     >
                                                         Sync Status
+                                                    </Button>
+                                                    <Button
+                                                        variant="secondary"
+                                                        icon={InventoryIcon}
+                                                        onClick={handleBulkInventorySync}
+                                                    >
+                                                        Sync Inventory
                                                     </Button>
                                                     <Button
                                                         variant="secondary"

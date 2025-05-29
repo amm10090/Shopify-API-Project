@@ -199,6 +199,11 @@ export const shopifyApi = {
     syncProductStatus: async (productIds?: string[]): Promise<ApiResponse<any>> => {
         return api.post('/shopify/sync-status', { productIds });
     },
+
+    // 同步产品库存
+    syncInventory: async (productIds?: string[]): Promise<ApiResponse<any>> => {
+        return api.post('/shopify/sync-inventory', { productIds });
+    },
 };
 
 // Dashboard相关API
@@ -263,6 +268,12 @@ export const settingsApi = {
     saveSettings: async (settings: any): Promise<ApiResponse<any>> => {
         return api.post('/settings', settings);
     },
+};
+
+// 获取产品原始API数据
+export const getProductRawData = async (productId: string): Promise<any> => {
+    const response = await api.get(`/products/${productId}/raw-data`);
+    return response.data;
 };
 
 export default api; 
