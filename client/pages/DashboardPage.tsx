@@ -13,6 +13,7 @@ import {
     Grid,
     Spinner,
     Banner,
+    Box,
 } from '@shopify/polaris';
 import {
     ProductIcon,
@@ -180,43 +181,55 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ showToast, setIsLoading }
                     <Grid>
                         <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 4, xl: 4 }}>
                             <Card>
-                                <BlockStack gap="400">
-                                    <InlineStack align="space-between">
-                                        <BlockStack gap="200">
-                                            <Text as="h3" variant="headingMd">Total Products</Text>
-                                            <Text as="p" variant="headingLg">{stats.totalProducts.toLocaleString()}</Text>
-                                        </BlockStack>
-                                        <Icon source={ProductIcon} />
-                                    </InlineStack>
-                                </BlockStack>
+                                <Box padding="400">
+                                    <BlockStack gap="300">
+                                        <InlineStack align="space-between">
+                                            <Text as="h3" variant="headingSm" tone="subdued">
+                                                Total Products
+                                            </Text>
+                                            <Icon source={ProductIcon} tone="base" />
+                                        </InlineStack>
+                                        <Text as="p" variant="heading2xl" fontWeight="bold">
+                                            {stats.totalProducts.toLocaleString()}
+                                        </Text>
+                                    </BlockStack>
+                                </Box>
                             </Card>
                         </Grid.Cell>
 
                         <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 4, xl: 4 }}>
                             <Card>
-                                <BlockStack gap="400">
-                                    <InlineStack align="space-between">
-                                        <BlockStack gap="200">
-                                            <Text as="h3" variant="headingMd">Active Brands</Text>
-                                            <Text as="p" variant="headingLg">{stats.activeBrands}/{stats.totalBrands}</Text>
-                                        </BlockStack>
-                                        <Icon source={CollectionIcon} />
-                                    </InlineStack>
-                                </BlockStack>
+                                <Box padding="400">
+                                    <BlockStack gap="300">
+                                        <InlineStack align="space-between">
+                                            <Text as="h3" variant="headingSm" tone="subdued">
+                                                Active Brands
+                                            </Text>
+                                            <Icon source={CollectionIcon} tone="info" />
+                                        </InlineStack>
+                                        <Text as="p" variant="heading2xl" fontWeight="bold">
+                                            {stats.activeBrands}/{stats.totalBrands}
+                                        </Text>
+                                    </BlockStack>
+                                </Box>
                             </Card>
                         </Grid.Cell>
 
                         <Grid.Cell columnSpan={{ xs: 6, sm: 3, md: 3, lg: 4, xl: 4 }}>
                             <Card>
-                                <BlockStack gap="400">
-                                    <InlineStack align="space-between">
-                                        <BlockStack gap="200">
-                                            <Text as="h3" variant="headingMd">Recent Imports</Text>
-                                            <Text as="p" variant="headingLg">{stats.recentImports}</Text>
-                                        </BlockStack>
-                                        <Icon source={ImportIcon} />
-                                    </InlineStack>
-                                </BlockStack>
+                                <Box padding="400">
+                                    <BlockStack gap="300">
+                                        <InlineStack align="space-between">
+                                            <Text as="h3" variant="headingSm" tone="subdued">
+                                                Recent Imports
+                                            </Text>
+                                            <Icon source={ImportIcon} tone="success" />
+                                        </InlineStack>
+                                        <Text as="p" variant="heading2xl" fontWeight="bold">
+                                            {stats.recentImports}
+                                        </Text>
+                                    </BlockStack>
+                                </Box>
                             </Card>
                         </Grid.Cell>
                     </Grid>
@@ -285,8 +298,6 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ showToast, setIsLoading }
                         </BlockStack>
                     </Card>
                 </Layout.Section>
-
-
 
                 {/* 快速操作 */}
                 <Layout.Section>

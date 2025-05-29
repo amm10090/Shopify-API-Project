@@ -40,6 +40,7 @@ import {
 } from '@shopify/polaris-icons';
 import { productApi, brandApi, shopifyApi } from '../services/api';
 import { UnifiedProduct, Brand } from '@shared/types';
+import { ProductDetailModal } from '../components/ProductDetailModal';
 
 interface ProductsPageProps {
     showToast: (message: string) => void;
@@ -60,6 +61,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
     const [totalProducts, setTotalProducts] = useState(0);
     const [deleteModalActive, setDeleteModalActive] = useState(false);
     const [importProgress, setImportProgress] = useState<{ [key: string]: boolean }>({});
+
+    // Product detail modal state
+    const [detailModalActive, setDetailModalActive] = useState(false);
+    const [selectedProduct, setSelectedProduct] = useState<UnifiedProduct | null>(null);
 
     const limit = 20;
 
@@ -483,12 +488,12 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
                         <Card>
                             <Box padding="400">
-                                <BlockStack gap="200">
-                                    <InlineStack gap="200" align="start">
-                                        <Icon source={ProductIcon} tone="base" />
-                                        <Text as="h3" variant="headingSm">
+                                <BlockStack gap="300">
+                                    <InlineStack align="space-between">
+                                        <Text as="h3" variant="headingSm" tone="subdued">
                                             Total Products
                                         </Text>
+                                        <Icon source={ProductIcon} tone="base" />
                                     </InlineStack>
                                     <Text as="p" variant="heading2xl" fontWeight="bold">
                                         {totalProducts.toLocaleString()}
@@ -498,12 +503,12 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                         </Card>
                         <Card>
                             <Box padding="400">
-                                <BlockStack gap="200">
-                                    <InlineStack gap="200" align="start">
-                                        <Icon source={ImportIcon} tone="success" />
-                                        <Text as="h3" variant="headingSm">
+                                <BlockStack gap="300">
+                                    <InlineStack align="space-between">
+                                        <Text as="h3" variant="headingSm" tone="subdued">
                                             Imported
                                         </Text>
+                                        <Icon source={ImportIcon} tone="success" />
                                     </InlineStack>
                                     <Text as="p" variant="heading2xl" fontWeight="bold" tone="success">
                                         {stats.imported}
@@ -513,12 +518,12 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                         </Card>
                         <Card>
                             <Box padding="400">
-                                <BlockStack gap="200">
-                                    <InlineStack gap="200" align="start">
-                                        <Icon source={CalendarIcon} tone="warning" />
-                                        <Text as="h3" variant="headingSm">
+                                <BlockStack gap="300">
+                                    <InlineStack align="space-between">
+                                        <Text as="h3" variant="headingSm" tone="subdued">
                                             Pending
                                         </Text>
+                                        <Icon source={CalendarIcon} tone="warning" />
                                     </InlineStack>
                                     <Text as="p" variant="heading2xl" fontWeight="bold" tone="caution">
                                         {stats.pending}
@@ -528,12 +533,12 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                         </Card>
                         <Card>
                             <Box padding="400">
-                                <BlockStack gap="200">
-                                    <InlineStack gap="200" align="start">
-                                        <Icon source={InventoryIcon} tone="success" />
-                                        <Text as="h3" variant="headingSm">
+                                <BlockStack gap="300">
+                                    <InlineStack align="space-between">
+                                        <Text as="h3" variant="headingSm" tone="subdued">
                                             In Stock
                                         </Text>
+                                        <Icon source={InventoryIcon} tone="success" />
                                     </InlineStack>
                                     <Text as="p" variant="heading2xl" fontWeight="bold" tone="success">
                                         {stats.inStock}
@@ -800,7 +805,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                                                         size="slim"
                                                                         icon={ViewIcon}
                                                                         variant="tertiary"
-                                                                        onClick={() => showToast(`Viewing ${product.title}`)}
+                                                                        onClick={() => {
+                                                                            setSelectedProduct(product);
+                                                                            setDetailModalActive(true);
+                                                                        }}
                                                                     />
                                                                 </Tooltip>
                                                                 <Tooltip content="Edit product">
@@ -920,6 +928,20 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                     </BlockStack>
                 </Modal.Section>
             </Modal>
+
+            {/* Product detail modal */}
+            {detailModalActive && selectedProduct && (
+                <ProductDetailModal
+                    product={selectedProduct}
+                    open={detailModalActive}
+                    onClose={() => {
+                        setDetailModalActive(false);
+                        setSelectedProduct(null);
+                    }}
+                    onImport={handleSingleImport}
+                    isImporting={importProgress[selectedProduct.id] || false}
+                />
+            )}
         </Page>
     );
 };

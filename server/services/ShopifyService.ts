@@ -149,12 +149,45 @@ export class ShopifyService {
      */
     async getProductBySku(session: Session, sku: string): Promise<any> {
         try {
+            // 验证session和必要的参数
+            if (!session) {
+                throw new Error('Session is required');
+            }
+
+            if (!session.accessToken) {
+                throw new Error('Session access token is missing');
+            }
+
+            if (!sku) {
+                throw new Error('SKU is required');
+            }
+
+            // 验证shopify实例
+            if (!this.shopify || !this.shopify.rest) {
+                throw new Error('Shopify API instance not properly initialized');
+            }
+
+            if (!this.shopify.rest.Product) {
+                throw new Error('Shopify Product API not available');
+            }
+
+            logger.info(`Searching for product with SKU: ${sku} in shop: ${session.shop}`);
+
             const products = await this.shopify.rest.Product.all({
                 session,
                 limit: 250
             });
 
+            if (!products || !products.data) {
+                logger.warn(`No products data returned for shop: ${session.shop}`);
+                return null;
+            }
+
             for (const product of products.data) {
+                if (!product.variants) {
+                    continue;
+                }
+
                 for (const variant of product.variants) {
                     if (variant.sku === sku) {
                         logger.info(`Found product by SKU '${sku}': ${product.title} (ID: ${product.id})`);
@@ -163,11 +196,19 @@ export class ShopifyService {
                 }
             }
 
-            logger.info(`No product found with SKU '${sku}'`);
+            logger.info(`No product found with SKU '${sku}' in shop: ${session.shop}`);
             return null;
 
         } catch (error) {
-            logger.error(`Error finding product by SKU '${sku}':`, error);
+            logger.error(`Error finding product by SKU '${sku}':`, {
+                error: error instanceof Error ? error.message : 'Unknown error',
+                stack: error instanceof Error ? error.stack : undefined,
+                shop: session?.shop,
+                hasAccessToken: !!session?.accessToken,
+                hasShopifyInstance: !!this.shopify,
+                hasRestAPI: !!this.shopify?.rest,
+                hasProductAPI: !!this.shopify?.rest?.Product
+            });
             throw error;
         }
     }

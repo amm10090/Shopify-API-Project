@@ -13,6 +13,7 @@ import {
 } from '@shopify/polaris';
 import { ProductCard } from './ProductCard';
 import { FilterPanel } from './FilterPanel';
+import { ProductDetailModal } from './ProductDetailModal';
 import { productApi } from '../services/api';
 import { UnifiedProduct, ProductFilters } from '@shared/types';
 
@@ -34,6 +35,10 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ showToast, setIsLoadin
         priceRange: undefined,
         categories: []
     });
+
+    // Product detail modal state
+    const [detailModalActive, setDetailModalActive] = useState(false);
+    const [selectedProduct, setSelectedProduct] = useState<UnifiedProduct | null>(null);
 
     const limit = 20; // 每页显示的产品数量
 
@@ -220,6 +225,10 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ showToast, setIsLoadin
                                     product={product}
                                     onImport={handleProductImport}
                                     onSelect={handleProductSelect}
+                                    onViewDetails={(product) => {
+                                        setSelectedProduct(product);
+                                        setDetailModalActive(true);
+                                    }}
                                     isSelected={selectedProducts.includes(product.id)}
                                 />
                             </Grid.Cell>
@@ -258,6 +267,20 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ showToast, setIsLoadin
                     {renderProductGrid()}
                 </Layout.Section>
             </Layout>
+
+            {/* Product detail modal */}
+            {detailModalActive && selectedProduct && (
+                <ProductDetailModal
+                    product={selectedProduct}
+                    open={detailModalActive}
+                    onClose={() => {
+                        setDetailModalActive(false);
+                        setSelectedProduct(null);
+                    }}
+                    onImport={handleProductImport}
+                    isImporting={false}
+                />
+            )}
         </Page>
     );
 }; 

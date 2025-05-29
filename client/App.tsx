@@ -2,7 +2,6 @@ import React, { useState } from 'react'
 import {
     Frame,
     Navigation,
-    TopBar,
     Toast,
     Loading,
 } from '@shopify/polaris'
@@ -24,18 +23,11 @@ type Page = 'dashboard' | 'products' | 'brands' | 'import' | 'settings' | 'conte
 
 function App() {
     const [currentPage, setCurrentPage] = useState<Page>('dashboard')
-    const [mobileNavigationActive, setMobileNavigationActive] = useState(false)
-    const [userMenuActive, setUserMenuActive] = useState(false)
 
     // 使用 Context hooks
     const { user, isAuthenticated, logout } = useAuth()
     const { isLoading, setLoading } = useLoading()
     const { toastActive, toastMessage, showToast, hideToast } = useToast()
-
-    const toggleMobileNavigationActive = () =>
-        setMobileNavigationActive(!mobileNavigationActive)
-
-    const toggleUserMenuActive = () => setUserMenuActive(!userMenuActive)
 
     const navigationMarkup = (
         <Navigation location="/">
@@ -76,13 +68,6 @@ function App() {
         </Navigation>
     )
 
-    const topBarMarkup = (
-        <TopBar
-            showNavigationToggle
-            onNavigationToggle={toggleMobileNavigationActive}
-        />
-    )
-
     const renderCurrentPage = () => {
         switch (currentPage) {
             case 'dashboard':
@@ -109,12 +94,7 @@ function App() {
     const loadingMarkup = isLoading ? <Loading /> : null
 
     return (
-        <Frame
-            topBar={topBarMarkup}
-            navigation={navigationMarkup}
-            showMobileNavigation={mobileNavigationActive}
-            onNavigationDismiss={toggleMobileNavigationActive}
-        >
+        <Frame navigation={navigationMarkup}>
             {loadingMarkup}
             {renderCurrentPage()}
             {toastMarkup}

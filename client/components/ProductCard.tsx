@@ -17,6 +17,7 @@ interface ProductCardProps {
     product: UnifiedProduct;
     onImport: (productId: string) => void;
     onSelect: (productId: string, selected: boolean) => void;
+    onViewDetails?: (product: UnifiedProduct) => void;
     isSelected: boolean;
     isImporting?: boolean;
 }
@@ -25,6 +26,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
     product,
     onImport,
     onSelect,
+    onViewDetails,
     isSelected,
     isImporting = false
 }) => {
@@ -210,6 +212,17 @@ export const ProductCard: React.FC<ProductCardProps> = ({
 
                         {/* 操作按钮 */}
                         <InlineStack gap="200">
+                            {onViewDetails && (
+                                <Button
+                                    variant="plain"
+                                    size="slim"
+                                    icon={ViewIcon}
+                                    onClick={() => onViewDetails(product)}
+                                >
+                                    View Details
+                                </Button>
+                            )}
+
                             {product.importStatus === 'pending' && (
                                 <Button
                                     variant="primary"
@@ -219,7 +232,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
                                     onClick={handleImport}
                                     disabled={!product.availability}
                                 >
-                                    导入
+                                    Import
                                 </Button>
                             )}
 
@@ -234,7 +247,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
                                     }
                                     external={!!product.shopifyProductId}
                                 >
-                                    查看
+                                    View in Shopify
                                 </Button>
                             )}
 
@@ -244,7 +257,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
                                 url={product.affiliateUrl}
                                 external
                             >
-                                原链接
+                                Original Link
                             </Button>
                         </InlineStack>
 

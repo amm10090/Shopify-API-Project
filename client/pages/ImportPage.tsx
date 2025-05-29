@@ -20,9 +20,10 @@ import {
     Spinner,
     EmptyState,
 } from '@shopify/polaris';
-import { SearchIcon, ImportIcon } from '@shopify/polaris-icons';
+import { SearchIcon, ImportIcon, ViewIcon } from '@shopify/polaris-icons';
 import { brandApi, importApi } from '../services/api';
 import { Brand, UnifiedProduct, ImportJob } from '@shared/types';
+import { ProductDetailModal } from '../components/ProductDetailModal';
 
 interface ImportPageProps {
     showToast: (message: string) => void;
@@ -47,6 +48,10 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
     // 导入历史
     const [importHistory, setImportHistory] = useState<ImportJob[]>([]);
     const [loadingHistory, setLoadingHistory] = useState(false);
+
+    // Product detail modal state
+    const [detailModalActive, setDetailModalActive] = useState(false);
+    const [selectedProduct, setSelectedProduct] = useState<UnifiedProduct | null>(null);
 
     // 获取品牌列表
     const fetchBrands = useCallback(async () => {
@@ -376,6 +381,19 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                 {product.categories.length > 0 ? product.categories.slice(0, 3).join(', ') : 'No categories'}
             </div>
         </div>,
+        <div style={{ minHeight: '80px', display: 'flex', alignItems: 'center', minWidth: '80px' }}>
+            <Button
+                size="slim"
+                variant="plain"
+                icon={ViewIcon}
+                onClick={() => {
+                    setSelectedProduct(product);
+                    setDetailModalActive(true);
+                }}
+            >
+                View
+            </Button>
+        </div>
     ]);
 
     if (loadingBrands) {
@@ -508,8 +526,8 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
 
                                 <div style={{ overflowX: 'auto' }}>
                                     <DataTable
-                                        columnContentTypes={['text', 'numeric', 'text', 'text']}
-                                        headings={['Product', 'Price', 'Stock Status', 'Categories']}
+                                        columnContentTypes={['text', 'numeric', 'text', 'text', 'text']}
+                                        headings={['Product', 'Price', 'Stock Status', 'Categories', 'Actions']}
                                         rows={searchResultRows}
                                         truncate
                                     />
@@ -612,6 +630,63 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                     </Card>
                 </Layout.Section>
             </Layout>
+
+            {/* Product detail modal */}
+            {detailModalActive && selectedProduct && (
+                <ProductDetailModal
+                    product={selectedProduct}
+                    open={detailModalActive}
+                    onClose={() => {
+                        setDetailModalActive(false);
+                        setSelectedProduct(null);
+                    }}
+                    onImport={async (productId: string) => {
+                        setIsImporting(true);
+                        try {
+                            const response = await fetch('/api/shopify/import', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                    productIds: [productId]
+                                })
+                            });
+
+                            const result = await response.json();
+
+                            if (result.success) {
+                                const { success, failed, errors } = result.data;
+
+                                if (failed > 0) {
+                                    showToast(`Import failed: ${errors[0]?.error || 'Unknown error'}`);
+                                } else {
+                                    showToast('Product imported successfully');
+                                }
+
+                                // Update the product in search results
+                                setSearchResults(prevResults =>
+                                    prevResults.map(p =>
+                                        p.id === productId
+                                            ? { ...p, importStatus: 'imported' }
+                                            : p
+                                    )
+                                );
+
+                                setDetailModalActive(false);
+                                setSelectedProduct(null);
+                            } else {
+                                showToast(result.error || 'Failed to import product');
+                            }
+                        } catch (error) {
+                            showToast('Failed to import product');
+                        } finally {
+                            setIsImporting(false);
+                        }
+                    }}
+                    isImporting={isImporting}
+                />
+            )}
         </Page>
     );
 };

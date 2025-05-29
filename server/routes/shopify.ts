@@ -32,6 +32,28 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
             errors: [] as any[]
         };
 
+        // 获取当前会话
+        const session = (req as any).shopifySession;
+
+        // 验证session
+        if (!session) {
+            res.status(401).json({
+                success: false,
+                error: 'No valid Shopify session found. Please authenticate first.'
+            });
+            return;
+        }
+
+        if (!session.accessToken) {
+            res.status(401).json({
+                success: false,
+                error: 'Session access token is missing. Please re-authenticate.'
+            });
+            return;
+        }
+
+        logger.info(`Starting bulk import for shop: ${session.shop}, products: ${productIds.length}`);
+
         for (const productId of productIds) {
             try {
                 // 获取产品信息
@@ -76,9 +98,6 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
                     keywordsMatched: product.keywordsMatched,
                     sku: product.sku || undefined
                 };
-
-                // 获取当前会话
-                const session = (req as any).shopifySession;
 
                 // 检查是否已存在于Shopify
                 let shopifyProduct;
@@ -220,6 +239,28 @@ router.post('/sync/:productId', async (req: Request, res: Response, next: NextFu
             return;
         }
 
+        // 获取当前会话
+        const session = (req as any).shopifySession;
+
+        // 验证session
+        if (!session) {
+            res.status(401).json({
+                success: false,
+                error: 'No valid Shopify session found. Please authenticate first.'
+            });
+            return;
+        }
+
+        if (!session.accessToken) {
+            res.status(401).json({
+                success: false,
+                error: 'Session access token is missing. Please re-authenticate.'
+            });
+            return;
+        }
+
+        logger.info(`Syncing product ${productId} for shop: ${session.shop}`);
+
         // 转换为UnifiedProduct格式
         const unifiedProduct = {
             id: product.id,
@@ -241,9 +282,6 @@ router.post('/sync/:productId', async (req: Request, res: Response, next: NextFu
             keywordsMatched: product.keywordsMatched,
             sku: product.sku || undefined
         };
-
-        // 获取当前会话
-        const session = (req as any).shopifySession;
 
         // 更新Shopify产品
         const shopifyProduct = await shopifyService.updateProduct(
