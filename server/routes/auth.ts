@@ -5,7 +5,7 @@ import { prisma } from '@server/index';
 import { logger } from '@server/utils/logger';
 import { CustomAppService } from '@server/services/CustomAppService';
 
-const router = Router();
+const router: Router = Router();
 
 // 初始化Shopify API
 const shopify = shopifyApi({
