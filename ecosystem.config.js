@@ -2,7 +2,7 @@ module.exports = {
     apps: [{
         name: 'shopify-app',
         script: 'dist/server/index.js',
-        cwd: '/root/Shopify-API-Project',
+        cwd: process.cwd(),
         instances: 1,
         autorestart: true,
         watch: false,
@@ -24,6 +24,11 @@ module.exports = {
         exec_mode: 'fork',
         kill_timeout: 5000,
         listen_timeout: 10000,
-        shutdown_with_message: true
+        shutdown_with_message: true,
+        env_file: '.env',
+        restart_delay: 4000,
+        pmx: true,
+        merge_logs: true,
+        ignore_watch: ['node_modules', 'logs', '.git', 'dist']
     }]
 }; 
