@@ -82,11 +82,14 @@ async function main() {
             description: packageJson.description,
             main: 'server/index.js',
             scripts: {
-                start: 'node server/index.js'
+                start: 'node -r module-alias/register server/index.js'
             },
             dependencies: packageJson.dependencies,
             engines: packageJson.engines,
-            _moduleAliases: packageJson._moduleAliases
+            _moduleAliases: {
+                '@shared': './shared',
+                '@server': './server'
+            }
         };
 
         fs.writeFileSync(

@@ -3,79 +3,31 @@ import '@shopify/shopify-api/adapters/node';
 import { logger } from '@server/utils/logger';
 import { UnifiedProduct, ShopifyProduct } from '@shared/types/index';
 import { CustomAppService } from '@server/services/CustomAppService';
+import { getShopifyApi } from '@server/config/shopify';
 
 export class ShopifyService {
     private shopify: any;
     private isCustomApp: boolean;
 
     constructor() {
-        // 检查是否为自定义应用模式
-        this.isCustomApp = CustomAppService.isCustomAppMode();
+        this.isCustomApp = process.env.SHOPIFY_APP_TYPE === 'custom';
 
-        // 检查必需的环境变量
-        const requiredEnvVars: { [key: string]: string | undefined } = {};
-
+        // 验证必需的环境变量
+        const requiredVars = ['SHOPIFY_API_KEY', 'SHOPIFY_API_SECRET'];
         if (this.isCustomApp) {
-            // 自定义应用需要的环境变量
-            requiredEnvVars.SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
-            requiredEnvVars.SHOPIFY_STORE_NAME = process.env.SHOPIFY_STORE_NAME;
-        } else {
-            // OAuth 应用需要的环境变量
-            requiredEnvVars.SHOPIFY_API_KEY = process.env.SHOPIFY_API_KEY;
-            requiredEnvVars.SHOPIFY_API_SECRET = process.env.SHOPIFY_API_SECRET;
+            requiredVars.push('SHOPIFY_ACCESS_TOKEN', 'SHOPIFY_STORE_NAME');
         }
 
-        for (const [key, value] of Object.entries(requiredEnvVars)) {
-            if (!value) {
+        for (const key of requiredVars) {
+            if (!process.env[key]) {
                 throw new Error(`Missing required environment variable: ${key}`);
             }
         }
 
-        if (this.isCustomApp) {
-            // 为自定义应用创建 shopifyApi 实例
-            this.shopify = shopifyApi({
-                apiKey: process.env.SHOPIFY_API_KEY || 'dummy-key', // 自定义应用可能不需要，但API要求
-                apiSecretKey: process.env.SHOPIFY_API_SECRET || 'dummy-secret',
-                scopes: [
-                    'read_products',
-                    'write_products',
-                    'read_inventory',
-                    'write_inventory',
-                    'read_product_listings',
-                    'write_product_listings',
-                    'read_collections',
-                    'write_collections'
-                ],
-                hostName: process.env.SHOPIFY_HOST_NAME || 'localhost:3000',
-                apiVersion: ApiVersion.July24,
-                isEmbeddedApp: false, // 自定义应用不是嵌入式应用
-            });
+        // 使用单例的Shopify API实例
+        this.shopify = getShopifyApi();
 
-            logger.info('ShopifyService initialized for custom app mode');
-        } else {
-            // OAuth 应用配置
-            this.shopify = shopifyApi({
-                apiKey: process.env.SHOPIFY_API_KEY!,
-                apiSecretKey: process.env.SHOPIFY_API_SECRET!,
-                scopes: [
-                    'read_products',
-                    'write_products',
-                    'read_inventory',
-                    'write_inventory',
-                    'read_product_listings',
-                    'write_product_listings',
-                    'read_collections',
-                    'write_collections'
-                ],
-                hostName: process.env.SHOPIFY_HOST_NAME || 'localhost:3000',
-                apiVersion: ApiVersion.July24,
-                isEmbeddedApp: true,
-            });
-
-            logger.info('ShopifyService initialized for OAuth app mode');
-        }
-
-        logger.info('ShopifyService initialized successfully');
+        logger.info(`ShopifyService initialized for ${this.isCustomApp ? 'custom' : 'OAuth'} app mode`);
     }
 
     /**

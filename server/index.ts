@@ -35,8 +35,8 @@ import { logger } from './utils/logger';
 // Environment variables already loaded at the top
 
 const app = express();
-// 强制使用3000端口，忽略Shopify CLI的随机端口分配
-const PORT = 3000;
+// 使用环境变量配置端口，生产环境默认3000，开发环境可以使用不同端口
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
 // Initialize database
 export const prisma = new PrismaClient();
@@ -46,9 +46,18 @@ let viteDevServer: any = null;
 
 // 异步初始化 Vite 开发服务器
 async function initializeVite() {
+    // 只在开发环境中初始化 Vite
     if (process.env.NODE_ENV !== 'production') {
         try {
             const { createServer } = await import('vite');
+            const configPath = path.join(__dirname, '../vite.config.ts');
+
+            // 检查配置文件是否存在
+            if (!fs.existsSync(configPath)) {
+                logger.warn(`Vite config file not found at ${configPath}, skipping Vite initialization`);
+                return;
+            }
+
             viteDevServer = await createServer({
                 server: {
                     middlewareMode: true,
@@ -58,7 +67,7 @@ async function initializeVite() {
                 },
                 appType: 'custom',
                 root: path.join(__dirname, '..'),
-                configFile: path.join(__dirname, '../vite.config.ts'),
+                configFile: configPath,
                 optimizeDeps: {
                     exclude: ['@shopify/app-bridge-react']
                 },
@@ -73,6 +82,8 @@ async function initializeVite() {
         } catch (error) {
             logger.warn('Failed to initialize Vite dev server:', error);
         }
+    } else {
+        logger.info('Production mode: Skipping Vite initialization');
     }
 }
 
