@@ -61,12 +61,17 @@ async function main() {
         process.exit(1);
     }
 
-    // 5. 构建客户端
+    // 5. 构建服务器端
+    if (!execCommand('npm run build:server', '构建服务器端')) {
+        process.exit(1);
+    }
+
+    // 6. 构建客户端
     if (!execCommand('npm run build:client', '构建客户端')) {
         process.exit(1);
     }
 
-    // 6. 复制必要的文件
+    // 7. 复制必要的文件
     log('📋 复制必要的文件...', 'blue');
     try {
         // 复制 package.json
@@ -100,7 +105,7 @@ async function main() {
         process.exit(1);
     }
 
-    // 7. 显示构建结果
+    // 8. 显示构建结果
     const endTime = Date.now();
     const buildTime = ((endTime - startTime) / 1000).toFixed(2);
 
