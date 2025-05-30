@@ -274,7 +274,7 @@ async function startServer() {
             logger.info('Using Vite development server for static files');
         } else {
             // 生产模式或 Vite 不可用时的静态文件服务
-            const distPath = path.join(__dirname, '../dist/client');
+            const distPath = path.join(__dirname, '../client');
             if (fs.existsSync(distPath)) {
                 app.use(express.static(distPath, { index: false }));
                 logger.info('Serving static files from dist/client');
@@ -347,10 +347,14 @@ async function startServer() {
                     html = await viteDevServer.transformIndexHtml(req.originalUrl, template);
                 } else {
                     // 生产模式下直接读取文件
-                    const distPath = path.join(__dirname, '../dist/client');
-                    const indexPath = fs.existsSync(path.join(distPath, 'index.html')) ?
-                        path.join(distPath, 'index.html') :
-                        path.join(__dirname, '../index.html');
+                    // 注意：在生产环境中，__dirname 指向 dist/server，所以需要正确计算路径
+                    const clientDistPath = path.join(__dirname, '../client');
+                    const fallbackPath = path.join(__dirname, '../../index.html');
+
+                    const indexPath = fs.existsSync(path.join(clientDistPath, 'index.html')) ?
+                        path.join(clientDistPath, 'index.html') :
+                        fallbackPath;
+
                     html = fs.readFileSync(indexPath, 'utf8');
                 }
 
