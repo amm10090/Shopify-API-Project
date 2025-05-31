@@ -864,9 +864,11 @@ router.post('/:id/diagnose-image', verifyShopifySession, async (req: Request, re
                     message: 'URL format is valid'
                 });
 
-                // 检查3: 图片可访问性
+                // 检查3: 图片可访问性和格式检测
                 try {
                     const startTime = Date.now();
+
+                    // 首先进行HEAD请求检查基本可访问性
                     const response = await fetch(product.imageUrl, {
                         method: 'HEAD',
                         signal: AbortSignal.timeout(10000),
@@ -880,67 +882,105 @@ router.post('/:id/diagnose-image', verifyShopifySession, async (req: Request, re
                         const contentType = response.headers.get('content-type');
                         const contentLength = response.headers.get('content-length');
 
+                        // 检查图片格式匹配性
+                        const urlExtension = product.imageUrl.toLowerCase().match(/\.([a-z0-9]+)(?:\?|$)/)?.[1];
+                        const actualFormat = contentType?.toLowerCase().includes('jpeg') ? 'jpg' :
+                            contentType?.toLowerCase().includes('png') ? 'png' :
+                                contentType?.toLowerCase().includes('gif') ? 'gif' :
+                                    contentType?.toLowerCase().includes('webp') ? 'webp' : null;
+
+                        let formatStatus: 'pass' | 'warning' | 'fail' = 'pass';
+                        let formatMessage = `Image is accessible (${response.status})`;
+
+                        if (urlExtension && actualFormat) {
+                            const normalizeExt = (ext: string) => ext.toLowerCase().replace('jpeg', 'jpg');
+                            const isFormatMatch = normalizeExt(urlExtension) === normalizeExt(actualFormat);
+
+                            if (!isFormatMatch) {
+                                formatStatus = 'warning';
+                                formatMessage = `Format mismatch: URL extension=${urlExtension}, actual format=${actualFormat}`;
+                            } else {
+                                formatMessage = `Format validation passed: ${actualFormat}`;
+                            }
+                        } else if (!contentType || !contentType.startsWith('image/')) {
+                            formatStatus = 'warning';
+                            formatMessage = `Invalid or missing image content type: ${contentType || 'None'}`;
+                        }
+
                         diagnostics.checks.push({
-                            check: 'Image Accessibility',
-                            status: 'pass',
-                            message: `Image is accessible (${response.status})`,
+                            check: 'Image Accessibility & Format',
+                            status: formatStatus,
+                            message: formatMessage,
                             details: {
                                 responseTime: `${responseTime}ms`,
                                 contentType,
-                                contentLength: contentLength ? `${contentLength} bytes` : 'Unknown'
+                                contentLength: contentLength ? `${contentLength} bytes` : 'Unknown',
+                                urlExtension,
+                                actualFormat,
+                                formatMatch: urlExtension && actualFormat ?
+                                    (urlExtension.toLowerCase().replace('jpeg', 'jpg') === actualFormat.toLowerCase().replace('jpeg', 'jpg')) : null
                             }
                         });
 
-                        // 检查4: 内容类型
+                        // 检查4: 内容类型详细分析
                         if (contentType && contentType.startsWith('image/')) {
                             diagnostics.checks.push({
-                                check: 'Content Type',
+                                check: 'Content Type Validation',
                                 status: 'pass',
-                                message: `Valid image content type: ${contentType}`
+                                message: `Valid image content type: ${contentType}`,
+                                details: { contentType }
                             });
                         } else {
                             diagnostics.checks.push({
-                                check: 'Content Type',
+                                check: 'Content Type Validation',
                                 status: 'warning',
-                                message: `Non-standard content type: ${contentType || 'None'}`
+                                message: `Non-standard content type: ${contentType || 'None'}`,
+                                details: { contentType }
                             });
                         }
 
-                        // 检查5: 文件大小
+                        // 检查5: 文件大小验证
                         if (contentLength) {
                             const sizeBytes = parseInt(contentLength);
                             if (sizeBytes < 1000) {
                                 diagnostics.checks.push({
                                     check: 'File Size',
                                     status: 'warning',
-                                    message: `Very small file size: ${sizeBytes} bytes`
+                                    message: `Very small file size: ${sizeBytes} bytes - may indicate placeholder or error page`,
+                                    details: { sizeBytes, sizeMB: (sizeBytes / 1024 / 1024).toFixed(3) }
                                 });
                             } else if (sizeBytes > 10 * 1024 * 1024) {
                                 diagnostics.checks.push({
                                     check: 'File Size',
                                     status: 'warning',
-                                    message: `Large file size: ${Math.round(sizeBytes / 1024 / 1024)}MB`
+                                    message: `Large file size: ${Math.round(sizeBytes / 1024 / 1024)}MB - may affect loading performance`,
+                                    details: { sizeBytes, sizeMB: (sizeBytes / 1024 / 1024).toFixed(3) }
                                 });
                             } else {
                                 diagnostics.checks.push({
                                     check: 'File Size',
                                     status: 'pass',
-                                    message: `Reasonable file size: ${Math.round(sizeBytes / 1024)}KB`
+                                    message: `Reasonable file size: ${Math.round(sizeBytes / 1024)}KB`,
+                                    details: { sizeBytes, sizeKB: Math.round(sizeBytes / 1024) }
                                 });
                             }
                         }
 
                     } else {
                         diagnostics.checks.push({
-                            check: 'Image Accessibility',
+                            check: 'Image Accessibility & Format',
                             status: 'fail',
-                            message: `Image not accessible (${response.status})`
+                            message: `Image not accessible (${response.status})`,
+                            details: {
+                                httpStatus: response.status,
+                                statusText: response.statusText
+                            }
                         });
 
-                        // 如果直接访问失败，测试代理访问
+                        // 如果直接访问失败，测试代理访问和格式修复
                         try {
                             const appUrl = process.env.SHOPIFY_APP_URL || process.env.APPLICATION_URL || 'https://shopifydev.amoze.cc';
-                            const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(product.imageUrl)}`;
+                            const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(product.imageUrl)}&format=jpg&fix=true`;
 
                             const proxyResponse = await fetch(proxyUrl, {
                                 method: 'HEAD',
@@ -949,34 +989,44 @@ router.post('/:id/diagnose-image', verifyShopifySession, async (req: Request, re
 
                             if (proxyResponse.ok) {
                                 diagnostics.checks.push({
-                                    check: 'Proxy Image Access',
+                                    check: 'Proxy & Format Fix',
                                     status: 'pass',
-                                    message: `Image accessible via proxy (${proxyResponse.status})`,
+                                    message: `Image accessible via proxy with format fix (${proxyResponse.status})`,
                                     details: {
                                         proxyUrl: proxyUrl,
-                                        contentType: proxyResponse.headers.get('content-type') || 'Unknown'
+                                        contentType: proxyResponse.headers.get('content-type') || 'Unknown',
+                                        recommendation: 'Use proxy service or fix image format'
                                     }
                                 });
                             } else {
                                 diagnostics.checks.push({
-                                    check: 'Proxy Image Access',
+                                    check: 'Proxy & Format Fix',
                                     status: 'fail',
-                                    message: `Proxy access also failed (${proxyResponse.status})`
+                                    message: `Proxy access also failed (${proxyResponse.status})`,
+                                    details: { proxyStatus: proxyResponse.status }
                                 });
                             }
                         } catch (proxyError) {
                             diagnostics.checks.push({
-                                check: 'Proxy Image Access',
+                                check: 'Proxy & Format Fix',
                                 status: 'warning',
-                                message: `Proxy test failed: ${proxyError instanceof Error ? proxyError.message : 'Unknown error'}`
+                                message: `Proxy test failed: ${proxyError instanceof Error ? proxyError.message : 'Unknown error'}`,
+                                details: {
+                                    error: proxyError instanceof Error ? proxyError.message : 'Unknown error',
+                                    recommendation: 'Manual image URL correction may be needed'
+                                }
                             });
                         }
                     }
                 } catch (error) {
                     diagnostics.checks.push({
-                        check: 'Image Accessibility',
+                        check: 'Image Accessibility & Format',
                         status: 'fail',
-                        message: `Network error: ${error instanceof Error ? error.message : 'Unknown error'}`
+                        message: `Network error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                        details: {
+                            networkError: error instanceof Error ? error.message : 'Unknown error',
+                            recommendation: 'Check network connectivity or image URL validity'
+                        }
                     });
                 }
             }

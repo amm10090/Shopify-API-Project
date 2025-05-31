@@ -12,7 +12,7 @@ export class ShopifyService {
 
     constructor() {
         this.isCustomApp = process.env.SHOPIFY_APP_TYPE === 'custom';
-        this.useGraphQL = process.env.SHOPIFY_USE_GRAPHQL === 'true';
+        this.useGraphQL = process.env.SHOPIFY_USE_GRAPHQL !== 'false'; // 默认启用GraphQL
 
         // 验证必需的环境变量
         const requiredVars = ['SHOPIFY_API_KEY', 'SHOPIFY_API_SECRET'];
@@ -334,35 +334,73 @@ export class ShopifyService {
             if (unifiedProduct.imageUrl) {
                 logger.info(`Preparing to add image to product: ${unifiedProduct.imageUrl}`);
 
-                // 首先尝试编码URL以解决空格等问题
-                const encodedUrl = this.encodeImageUrl(unifiedProduct.imageUrl);
-                if (encodedUrl !== unifiedProduct.imageUrl) {
-                    logger.info(`Using URL-encoded image URL: ${encodedUrl}`);
-                    finalImageUrl = encodedUrl;
+                // 检测并修复图片格式问题 - 使用增强的检测逻辑
+                const optimizedImageUrl = await this.detectAndFixImageFormat(unifiedProduct.imageUrl);
+
+                if (optimizedImageUrl !== unifiedProduct.imageUrl) {
+                    logger.info(`Using format-optimized image URL: ${optimizedImageUrl}`);
+                    finalImageUrl = optimizedImageUrl;
                 }
 
-                // 验证图片URL格式
+                // 验证最终的图片URL
                 if (this.isValidImageUrlFormat(finalImageUrl)) {
                     try {
-                        // 测试图片URL是否可访问
-                        const imageAccessible = await this.testImageAccess(finalImageUrl);
+                        // 对于代理URL，跳过可访问性测试（因为代理服务会处理）
+                        const isProxyUrl = finalImageUrl.includes('/api/shopify/image-proxy');
 
-                        if (imageAccessible) {
-                            // 先尝试在产品创建时包含图片
+                        if (isProxyUrl) {
+                            // 代理URL直接认为有效
                             productData.images = [{
                                 src: finalImageUrl,
                                 alt: unifiedProduct.title
                             }];
                             imageValidated = true;
-                            logger.info(`Image URL validated and will be included in product creation: ${finalImageUrl}`);
+                            logger.info(`Proxy URL validated and will be included in product creation: ${finalImageUrl}`);
                         } else {
-                            logger.warn(`Image URL not accessible during validation, will try adding separately: ${finalImageUrl}`);
+                            // 非代理URL测试可访问性
+                            const imageAccessible = await this.testImageAccess(finalImageUrl);
+
+                            if (imageAccessible) {
+                                // 先尝试在产品创建时包含图片
+                                productData.images = [{
+                                    src: finalImageUrl,
+                                    alt: unifiedProduct.title
+                                }];
+                                imageValidated = true;
+                                logger.info(`Image URL validated and will be included in product creation: ${finalImageUrl}`);
+                            } else {
+                                logger.warn(`Image URL not accessible, will use proxy service: ${finalImageUrl}`);
+                                // 如果原URL不可访问，强制使用代理服务
+                                finalImageUrl = this.generateProxyUrl(unifiedProduct.imageUrl, true);
+                                productData.images = [{
+                                    src: finalImageUrl,
+                                    alt: unifiedProduct.title
+                                }];
+                                imageValidated = true;
+                                logger.info(`Using proxy service for product creation: ${finalImageUrl}`);
+                            }
                         }
                     } catch (imageError) {
-                        logger.warn(`Error testing image access, will try adding separately:`, imageError);
+                        logger.warn(`Error testing image access, using proxy service:`, imageError);
+                        // 出错时使用代理服务
+                        finalImageUrl = this.generateProxyUrl(unifiedProduct.imageUrl, true);
+                        productData.images = [{
+                            src: finalImageUrl,
+                            alt: unifiedProduct.title
+                        }];
+                        imageValidated = true;
+                        logger.info(`Error fallback: using proxy service for product creation: ${finalImageUrl}`);
                     }
                 } else {
-                    logger.warn(`Invalid image URL format, will skip image: ${finalImageUrl}`);
+                    logger.warn(`Invalid image URL format, using proxy service: ${finalImageUrl}`);
+                    // 格式无效时使用代理服务
+                    finalImageUrl = this.generateProxyUrl(unifiedProduct.imageUrl, true);
+                    productData.images = [{
+                        src: finalImageUrl,
+                        alt: unifiedProduct.title
+                    }];
+                    imageValidated = true;
+                    logger.info(`Format fix: using proxy service for product creation: ${finalImageUrl}`);
                 }
             } else {
                 logger.info(`No image URL provided for product: ${unifiedProduct.title}`);
@@ -447,10 +485,13 @@ export class ShopifyService {
     }
 
     /**
-     * 测试图片URL是否可访问
+     * 测试图片URL是否可访问（包含格式检测）
      */
     private async testImageAccess(url: string, timeout: number = 5000): Promise<boolean> {
         try {
+            // 首先尝试格式检测和修复
+            const optimizedUrl = await this.detectAndFixImageFormat(url);
+
             // 尝试多种User-Agent来提高兼容性
             const userAgents = [
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -458,59 +499,70 @@ export class ShopifyService {
                 'Mozilla/5.0 (compatible; Shopify/1.0; +https://shopify.com/)'
             ];
 
-            for (const userAgent of userAgents) {
+            // 测试原始URL和优化后的URL
+            const urlsToTest = [optimizedUrl];
+            if (optimizedUrl !== url) {
+                urlsToTest.push(url); // 如果优化后不同，也测试原始URL
+            }
+
+            for (const testUrl of urlsToTest) {
+                for (const userAgent of userAgents) {
+                    try {
+                        const response = await fetch(testUrl, {
+                            method: 'HEAD',
+                            signal: AbortSignal.timeout(timeout),
+                            headers: {
+                                'User-Agent': userAgent,
+                                'Accept': 'image/*,*/*;q=0.8',
+                                'Accept-Encoding': 'gzip, deflate, br',
+                                'Cache-Control': 'no-cache'
+                            }
+                        });
+
+                        if (response.ok) {
+                            const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+                            const isValidImage = (
+                                contentType.startsWith('image/') ||
+                                contentType.includes('octet-stream') ||
+                                contentType === '' // 某些服务器不返回Content-Type
+                            );
+
+                            if (isValidImage) {
+                                logger.debug(`Image URL accessible with User-Agent "${userAgent}": ${testUrl} (${contentType})`);
+                                return true;
+                            }
+                        }
+                    } catch (agentError) {
+                        // 尝试下一个User-Agent
+                        continue;
+                    }
+                }
+            }
+
+            // 如果HEAD请求都失败，尝试GET请求的前几个字节
+            for (const testUrl of urlsToTest) {
                 try {
-                    const response = await fetch(url, {
-                        method: 'HEAD',
+                    const response = await fetch(testUrl, {
+                        method: 'GET',
                         signal: AbortSignal.timeout(timeout),
                         headers: {
-                            'User-Agent': userAgent,
-                            'Accept': 'image/*,*/*;q=0.8',
-                            'Accept-Encoding': 'gzip, deflate, br',
-                            'Cache-Control': 'no-cache'
+                            'User-Agent': userAgents[0],
+                            'Range': 'bytes=0-1023', // 只获取前1KB
+                            'Accept': 'image/*,*/*;q=0.8'
                         }
                     });
 
                     if (response.ok) {
                         const contentType = response.headers.get('content-type')?.toLowerCase() || '';
-                        const isValidImage = (
-                            contentType.startsWith('image/') ||
-                            contentType.includes('octet-stream') ||
-                            contentType === '' // 某些服务器不返回Content-Type
-                        );
-
-                        if (isValidImage) {
-                            logger.debug(`Image URL accessible with User-Agent "${userAgent}": ${url} (${contentType})`);
+                        if (contentType.startsWith('image/')) {
+                            logger.debug(`Image URL accessible via GET request: ${testUrl} (${contentType})`);
                             return true;
                         }
                     }
-                } catch (agentError) {
-                    // 尝试下一个User-Agent
+                } catch (getError) {
+                    logger.debug(`GET request failed for image: ${testUrl}`);
                     continue;
                 }
-            }
-
-            // 如果HEAD请求都失败，尝试GET请求的前几个字节
-            try {
-                const response = await fetch(url, {
-                    method: 'GET',
-                    signal: AbortSignal.timeout(timeout),
-                    headers: {
-                        'User-Agent': userAgents[0],
-                        'Range': 'bytes=0-1023', // 只获取前1KB
-                        'Accept': 'image/*,*/*;q=0.8'
-                    }
-                });
-
-                if (response.ok) {
-                    const contentType = response.headers.get('content-type')?.toLowerCase() || '';
-                    if (contentType.startsWith('image/')) {
-                        logger.debug(`Image URL accessible via GET request: ${url} (${contentType})`);
-                        return true;
-                    }
-                }
-            } catch (getError) {
-                logger.warn(`Both HEAD and GET requests failed for image: ${url}`);
             }
 
             logger.warn(`Image URL not accessible with any method: ${url}`);
@@ -539,6 +591,10 @@ export class ShopifyService {
     private async addImageToProductWithGraphQL(session: Session, productId: string, imageUrl: string, altText: string): Promise<boolean> {
         try {
             const client = new this.shopify.clients.Graphql({ session });
+
+            // 首先尝试检测和修复图片格式
+            const optimizedImageUrl = await this.detectAndFixImageFormat(imageUrl);
+            logger.info(`Using optimized image URL for GraphQL: ${optimizedImageUrl}`);
 
             // 使用现代化的productCreateMedia mutation，避免弃用警告
             const mutation = `
@@ -570,39 +626,89 @@ export class ShopifyService {
                 }
             `;
 
-            // 构建符合最佳实践的变量结构
-            const variables = {
-                productId: `gid://shopify/Product/${productId}`,
-                media: [{
-                    originalSource: this.encodeImageUrl(imageUrl), // 确保URL正确编码
-                    alt: altText,
-                    mediaContentType: 'IMAGE'
-                }]
-            };
+            // 准备多个URL变体来尝试
+            const urlsToTry = [optimizedImageUrl];
 
-            const response = await client.request(mutation, { variables });
-
-            // 标准化错误处理
-            if (response.data?.productCreateMedia?.mediaUserErrors?.length > 0) {
-                const errors = response.data.productCreateMedia.mediaUserErrors;
-                logger.warn(`GraphQL image creation mediaUserErrors for product ${productId}:`, errors);
-                throw new Error(`Image creation failed: ${errors.map((e: any) => `${e.field?.join('.')}: ${e.message} (${e.code})`).join(', ')}`);
+            // 如果优化后的URL不同，也尝试原始URL
+            if (optimizedImageUrl !== imageUrl) {
+                urlsToTry.push(imageUrl);
             }
 
-            if (response.data?.productCreateMedia?.userErrors?.length > 0) {
-                const errors = response.data.productCreateMedia.userErrors;
-                logger.warn(`GraphQL image creation userErrors for product ${productId}:`, errors);
-                throw new Error(`Image creation failed: ${errors.map((e: any) => `${e.field?.join('.')}: ${e.message}`).join(', ')}`);
+            // 添加图片代理URL作为备选
+            const appUrl = process.env.SHOPIFY_APP_URL || process.env.APPLICATION_URL || 'https://shopifydev.amoze.cc';
+            const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(imageUrl)}&format=jpg&fix=true`;
+            urlsToTry.push(proxyUrl);
+
+            let lastError: Error | null = null;
+
+            // 尝试每个URL变体
+            for (const tryUrl of urlsToTry) {
+                try {
+                    logger.info(`Attempting to add image with URL: ${tryUrl}`);
+
+                    const variables = {
+                        productId: `gid://shopify/Product/${productId}`,
+                        media: [{
+                            originalSource: this.encodeImageUrl(tryUrl),
+                            alt: altText,
+                            mediaContentType: 'IMAGE'
+                        }]
+                    };
+
+                    const response = await client.request(mutation, { variables });
+
+                    // 检查GraphQL错误
+                    if (response.data?.productCreateMedia?.mediaUserErrors?.length > 0) {
+                        const errors = response.data.productCreateMedia.mediaUserErrors;
+                        const errorMessages = errors.map((e: any) => `${e.field?.join('.')}: ${e.message} (${e.code})`);
+
+                        // 检查是否是格式相关的错误
+                        const hasFormatError = errors.some((e: any) =>
+                            e.message?.toLowerCase().includes('format') ||
+                            e.message?.toLowerCase().includes('extension') ||
+                            e.message?.toLowerCase().includes('file type') ||
+                            e.code === 'INVALID_IMAGE_FORMAT'
+                        );
+
+                        if (hasFormatError) {
+                            logger.warn(`Format error with URL ${tryUrl}, trying next variant: ${errorMessages.join(', ')}`);
+                            lastError = new Error(`Format error: ${errorMessages.join(', ')}`);
+                            continue; // 尝试下一个URL
+                        } else {
+                            throw new Error(`Image creation failed: ${errorMessages.join(', ')}`);
+                        }
+                    }
+
+                    if (response.data?.productCreateMedia?.userErrors?.length > 0) {
+                        const errors = response.data.productCreateMedia.userErrors;
+                        const errorMessages = errors.map((e: any) => `${e.field?.join('.')}: ${e.message}`);
+                        logger.warn(`GraphQL userErrors with URL ${tryUrl}: ${errorMessages.join(', ')}`);
+                        lastError = new Error(`User errors: ${errorMessages.join(', ')}`);
+                        continue; // 尝试下一个URL
+                    }
+
+                    // 检查是否成功创建了媒体
+                    const media = response.data?.productCreateMedia?.media;
+                    if (media && media.length > 0) {
+                        const createdMedia = media[0];
+                        logger.info(`Successfully added image to product ${productId} using GraphQL Media API. Media ID: ${createdMedia.id}, Status: ${createdMedia.status}, URL: ${tryUrl}`);
+                        return true;
+                    } else {
+                        logger.warn(`GraphQL image creation returned no media for URL ${tryUrl}`);
+                        lastError = new Error('No media created');
+                        continue;
+                    }
+
+                } catch (urlError) {
+                    logger.warn(`GraphQL image creation failed for URL ${tryUrl}:`, urlError);
+                    lastError = urlError instanceof Error ? urlError : new Error(String(urlError));
+                    continue;
+                }
             }
 
-            const media = response.data?.productCreateMedia?.media;
-            if (media && media.length > 0) {
-                logger.info(`Successfully added image to product ${productId} using GraphQL Media API: ${imageUrl}`);
-                return true;
-            } else {
-                logger.warn(`GraphQL image creation returned no media for product ${productId}`);
-                return false;
-            }
+            // 所有URL都失败了
+            logger.error(`All GraphQL image creation attempts failed for product ${productId}. Last error:`, lastError);
+            throw lastError || new Error('All URL variants failed');
 
         } catch (error) {
             logger.error(`Error adding image to product ${productId} with GraphQL:`, error);
@@ -619,123 +725,183 @@ export class ShopifyService {
         try {
             const client = this.getRestClient(session);
 
-            // 尝试添加原始图片URL
-            try {
-                const response = await client.post({
-                    path: `products/${productId}/images`,
-                    data: {
-                        image: {
-                            src: imageUrl,
-                            alt: altText
-                        }
-                    }
-                });
+            // 首先检测和优化图片URL
+            const optimizedImageUrl = await this.detectAndFixImageFormat(imageUrl);
+            logger.info(`Using optimized image URL for REST API: ${optimizedImageUrl}`);
 
-                if (response.body?.image) {
-                    logger.info(`Successfully added image to product ${productId}: ${imageUrl}`);
-                    return true;
-                }
-            } catch (shopifyError: any) {
-                // 分析Shopify的具体错误
-                const errorMessage = shopifyError.message || '';
-                const errorBody = shopifyError.response?.body || {};
+            // 准备要尝试的URL列表（包括代理服务）
+            const urlsToTry = [optimizedImageUrl];
 
-                if (errorMessage.includes('not a valid image file type') ||
-                    errorBody.errors?.image?.some((err: string) => err.includes('not a valid image file type'))) {
+            if (optimizedImageUrl !== imageUrl) {
+                urlsToTry.push(imageUrl); // 原始URL作为备选
+            }
 
-                    logger.warn(`Shopify rejected image URL as invalid file type: ${imageUrl}`);
-                    logger.info(`Product ${productId} created successfully but without image due to Shopify image validation`);
+            // 添加图片代理URL作为最后的备选
+            const appUrl = process.env.SHOPIFY_APP_URL || process.env.APPLICATION_URL || 'https://shopifydev.amoze.cc';
+            const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(imageUrl)}&format=jpg&fix=true`;
+            urlsToTry.push(proxyUrl);
 
-                    // 尝试使用一些URL修改技巧
-                    const modifiedUrls = this.generateAlternativeImageUrls(imageUrl);
+            let lastError: any = null;
 
-                    for (const modifiedUrl of modifiedUrls) {
-                        try {
-                            logger.info(`Trying alternative image URL: ${modifiedUrl}`);
+            // 尝试每个URL
+            for (const tryUrl of urlsToTry) {
+                try {
+                    logger.info(`REST API: Attempting to add image with URL: ${tryUrl.substring(0, 100)}...`);
 
-                            const retryResponse = await client.post({
-                                path: `products/${productId}/images`,
-                                data: {
-                                    image: {
-                                        src: modifiedUrl,
-                                        alt: altText
-                                    }
-                                }
-                            });
-
-                            if (retryResponse.body?.image) {
-                                logger.info(`Successfully added alternative image to product ${productId}: ${modifiedUrl}`);
-                                return true;
+                    const response = await client.post({
+                        path: `products/${productId}/images`,
+                        data: {
+                            image: {
+                                src: tryUrl,
+                                alt: altText
                             }
-                        } catch (retryError) {
-                            logger.debug(`Alternative URL also failed: ${modifiedUrl}`);
-                            continue;
                         }
+                    });
+
+                    if (response.body?.image) {
+                        logger.info(`Successfully added image to product ${productId} via REST API: ${tryUrl.substring(0, 100)}...`);
+                        return true;
                     }
 
-                    // 所有尝试都失败了，但产品已创建成功
-                    logger.warn(`All image URLs failed for product ${productId}. Product created without image.`);
-                    return false; // 返回false表示图片添加失败，但不影响产品创建
-                } else {
-                    // 其他类型的错误
-                    logger.error(`Error adding image to product ${productId}:`, shopifyError);
-                    return false;
+                } catch (shopifyError: any) {
+                    lastError = shopifyError;
+
+                    // 分析Shopify的具体错误
+                    const errorMessage = shopifyError.message || '';
+                    const errorBody = shopifyError.response?.body || {};
+                    const statusCode = shopifyError.response?.code || shopifyError.response?.status;
+
+                    // 检查是否是格式相关的错误
+                    const isFormatError = (
+                        errorMessage.includes('not a valid image file type') ||
+                        errorMessage.includes('file type') ||
+                        errorMessage.includes('format') ||
+                        errorMessage.includes('extension') ||
+                        errorBody.errors?.image?.some((err: string) =>
+                            err.includes('not a valid image file type') ||
+                            err.includes('format') ||
+                            err.includes('extension')
+                        )
+                    );
+
+                    const isNetworkError = (
+                        statusCode === 422 ||
+                        errorMessage.includes('invalid') ||
+                        errorMessage.includes('could not be downloaded') ||
+                        errorMessage.includes('unreachable')
+                    );
+
+                    if (isFormatError || isNetworkError) {
+                        logger.warn(`Shopify rejected image URL (${statusCode}): ${tryUrl.substring(0, 100)}... - ${errorMessage}`);
+
+                        // 如果是格式错误或网络错误，尝试下一个URL
+                        continue;
+                    } else {
+                        // 其他类型的错误，记录但继续尝试
+                        logger.warn(`Unexpected error with URL ${tryUrl.substring(0, 100)}...: ${errorMessage}`);
+                        continue;
+                    }
                 }
             }
 
-            logger.warn(`Failed to add image to product ${productId}: ${imageUrl} (unknown reason)`);
-            return false;
+            // 所有URL都失败了
+            if (lastError) {
+                const errorMessage = lastError.message || '';
+                const errorBody = lastError.response?.body || {};
+
+                logger.error(`All REST API image URLs failed for product ${productId}. Last error: ${errorMessage}`, {
+                    productId,
+                    originalUrl: imageUrl,
+                    attemptedUrls: urlsToTry.length,
+                    lastErrorBody: errorBody
+                });
+
+                // 检查是否所有错误都是格式相关的
+                const allFormatErrors = urlsToTry.every((_, index) => {
+                    // 这里简化处理，假设如果最后一个错误是格式错误，那么可能都是格式问题
+                    return errorMessage.includes('not a valid image file type') ||
+                        errorMessage.includes('format') ||
+                        errorMessage.includes('extension');
+                });
+
+                if (allFormatErrors) {
+                    logger.warn(`All image format variants failed for product ${productId}. This image may not be compatible with Shopify.`);
+                } else {
+                    logger.warn(`Network or other issues prevented image upload for product ${productId}.`);
+                }
+            } else {
+                logger.warn(`Failed to add image to product ${productId}: all URLs returned no response`);
+            }
+
+            return false; // 图片添加失败，但不影响产品创建
+
         } catch (error) {
-            logger.error(`Error in addImageToProduct for product ${productId}:`, error);
+            logger.error(`Error in REST API addImageToProduct for product ${productId}:`, error);
             return false;
         }
     }
 
     /**
-     * 生成备用图片URL尝试列表
+     * 生成备用图片URL尝试列表（使用高级格式检测）
      */
     private generateAlternativeImageUrls(originalUrl: string): string[] {
         const alternatives: string[] = [];
 
         try {
-            // 0. 首先尝试正确编码原始URL（解决空格等问题）
+            // 1. 首先使用高级备用URL生成
+            const advancedAlternatives = this.generateAdvancedAlternativeImageUrls(originalUrl);
+            alternatives.push(...advancedAlternatives);
+
+            // 2. 添加传统的URL编码处理
             const encodedUrl = this.encodeImageUrl(originalUrl);
-            if (encodedUrl !== originalUrl) {
+            if (encodedUrl !== originalUrl && !alternatives.includes(encodedUrl)) {
                 alternatives.push(encodedUrl);
                 logger.info(`Generated URL-encoded alternative: ${encodedUrl}`);
             }
 
-            const url = new URL(encodedUrl || originalUrl);
-
-            // 1. 添加时间戳参数
+            // 3. 添加时间戳参数（用于绕过缓存）
             const withTimestamp = `${encodedUrl || originalUrl}${(encodedUrl || originalUrl).includes('?') ? '&' : '?'}t=${Date.now()}`;
-            alternatives.push(withTimestamp);
+            if (!alternatives.includes(withTimestamp)) {
+                alternatives.push(withTimestamp);
+            }
 
-            // 2. 如果URL没有明确的图片扩展名，尝试添加
+            // 4. 如果URL没有明确的图片扩展名，尝试添加
             if (!originalUrl.match(/\.(jpg|jpeg|png|gif|webp)(\?|$)/i)) {
-                alternatives.push(`${encodedUrl || originalUrl}.jpg`);
-                alternatives.push(`${encodedUrl || originalUrl}.png`);
+                const jpgVariant = `${encodedUrl || originalUrl}.jpg`;
+                const pngVariant = `${encodedUrl || originalUrl}.png`;
+
+                if (!alternatives.includes(jpgVariant)) {
+                    alternatives.push(jpgVariant);
+                }
+                if (!alternatives.includes(pngVariant)) {
+                    alternatives.push(pngVariant);
+                }
             }
 
-            // 3. 尝试转换为HTTPS
-            if (url.protocol === 'http:') {
-                const httpsUrl = (encodedUrl || originalUrl).replace('http://', 'https://');
-                alternatives.push(httpsUrl);
+            // 5. 尝试转换为HTTPS
+            try {
+                const url = new URL(encodedUrl || originalUrl);
+                if (url.protocol === 'http:') {
+                    const httpsUrl = (encodedUrl || originalUrl).replace('http://', 'https://');
+                    if (!alternatives.includes(httpsUrl)) {
+                        alternatives.push(httpsUrl);
+                    }
+                }
+            } catch (urlError) {
+                logger.debug(`URL parsing failed for HTTPS conversion: ${originalUrl}`);
             }
 
-            // 4. 尝试添加格式参数（对某些CDN有效）
-            alternatives.push(`${encodedUrl || originalUrl}${(encodedUrl || originalUrl).includes('?') ? '&' : '?'}format=jpg`);
-            alternatives.push(`${encodedUrl || originalUrl}${(encodedUrl || originalUrl).includes('?') ? '&' : '?'}format=png`);
-
-            // 5. 使用我们的图片代理服务（作为最后的尝试）
+            // 6. 使用图片代理服务（作为最后的尝试）
             const appUrl = process.env.SHOPIFY_APP_URL || process.env.APPLICATION_URL || 'https://shopifydev.amoze.cc';
-            const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(originalUrl)}`;
-            alternatives.push(proxyUrl);
+            const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(originalUrl)}&format=jpg&fix=true`;
+            if (!alternatives.includes(proxyUrl)) {
+                alternatives.push(proxyUrl);
+            }
 
-        } catch (urlError) {
-            logger.debug(`Error parsing URL for alternatives: ${originalUrl}`);
+        } catch (error) {
+            logger.debug(`Error generating alternatives for: ${originalUrl}`, error);
 
-            // 即使解析失败，也尝试基本的URL编码
+            // 回退到基本的URL编码
             try {
                 const basicEncoded = this.encodeImageUrl(originalUrl);
                 if (basicEncoded !== originalUrl) {
@@ -747,7 +913,10 @@ export class ShopifyService {
         }
 
         // 去重并限制尝试次数
-        return [...new Set(alternatives)].slice(0, 6);
+        const uniqueAlternatives = [...new Set(alternatives)].slice(0, 10);
+        logger.info(`Generated ${uniqueAlternatives.length} alternative URLs for image: ${originalUrl}`);
+
+        return uniqueAlternatives;
     }
 
     /**
@@ -1572,70 +1741,732 @@ export class ShopifyService {
         try {
             const client = new this.shopify.clients.Graphql({ session });
 
-            const mutation = `
-                mutation productUpdate($input: ProductInput!) {
-                    productUpdate(input: $input) {
-                        product {
-                            id
-                            title
-                            handle
-                            status
-                            variants(first: 1) {
-                                edges {
-                                    node {
-                                        id
-                                        sku
-                                        price
-                                        compareAtPrice
-                                    }
+            // 首先获取当前产品信息
+            const getProductQuery = `
+                query getProduct($id: ID!) {
+                    product(id: $id) {
+                        id
+                        title
+                        descriptionHtml
+                        vendor
+                        images(first: 1) {
+                            edges {
+                                node {
+                                    id
+                                    url
                                 }
                             }
                         }
-                        userErrors {
-                            field
-                            message
+                        variants(first: 1) {
+                            edges {
+                                node {
+                                    id
+                                    price
+                                    compareAtPrice
+                                    inventoryItem {
+                                        id
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             `;
 
-            // 构建更新输入，只包含需要更新的字段
-            const input = {
-                id: `gid://shopify/Product/${productId}`,
-                title: unifiedProduct.title,
-                bodyHtml: unifiedProduct.description,
-                vendor: unifiedProduct.brandName,
-                variants: [{
-                    price: unifiedProduct.salePrice && unifiedProduct.salePrice < unifiedProduct.price
-                        ? unifiedProduct.salePrice.toString()
-                        : unifiedProduct.price.toString(),
-                    compareAtPrice: unifiedProduct.salePrice && unifiedProduct.salePrice < unifiedProduct.price
-                        ? unifiedProduct.price.toString()
-                        : undefined,
-                }]
-            };
-
-            const response = await client.request(mutation, {
-                variables: { input }
+            const currentProductResponse = await client.request(getProductQuery, {
+                variables: { id: `gid://shopify/Product/${productId}` }
             });
 
-            if (response.data?.productUpdate?.userErrors?.length > 0) {
-                const errors = response.data.productUpdate.userErrors;
-                logger.error('GraphQL product update userErrors:', errors);
-                throw new Error(`Product update failed: ${errors.map((e: any) => `${e.field?.join('.')}: ${e.message}`).join(', ')}`);
+            const currentProduct = currentProductResponse.data?.product;
+            if (!currentProduct) {
+                throw new Error(`Product with ID ${productId} not found`);
             }
 
-            const product = response.data?.productUpdate?.product;
-            if (!product) {
-                throw new Error('Product update failed: No product returned');
+            let changed = false;
+            const updates: any[] = [];
+
+            // 检查基本信息是否需要更新
+            if (currentProduct.title !== unifiedProduct.title ||
+                currentProduct.descriptionHtml !== unifiedProduct.description ||
+                currentProduct.vendor !== unifiedProduct.brandName) {
+
+                const productUpdateMutation = `
+                    mutation productUpdate($input: ProductInput!) {
+                        productUpdate(input: $input) {
+                            product {
+                                id
+                                title
+                                descriptionHtml
+                                vendor
+                            }
+                            userErrors {
+                                field
+                                message
+                            }
+                        }
+                    }
+                `;
+
+                const productInput = {
+                    id: `gid://shopify/Product/${productId}`,
+                    title: unifiedProduct.title,
+                    descriptionHtml: unifiedProduct.description,
+                    vendor: unifiedProduct.brandName
+                };
+
+                const updateResponse = await client.request(productUpdateMutation, {
+                    variables: { input: productInput }
+                });
+
+                if (updateResponse.data?.productUpdate?.userErrors?.length > 0) {
+                    const errors = updateResponse.data.productUpdate.userErrors;
+                    logger.error('GraphQL product update userErrors:', errors);
+                    throw new Error(`Product update failed: ${errors.map((e: any) => `${e.field?.join('.')}: ${e.message}`).join(', ')}`);
+                }
+
+                changed = true;
+                logger.info(`Updated product basic info with GraphQL: ${productId}`);
             }
 
-            logger.info(`Product updated successfully with GraphQL: ${product.id}`);
-            return product;
+            // 更新变体价格
+            if (currentProduct.variants?.edges?.[0]?.node) {
+                const variant = currentProduct.variants.edges[0].node;
+                const targetPrice = unifiedProduct.salePrice && unifiedProduct.salePrice < unifiedProduct.price
+                    ? unifiedProduct.salePrice.toString()
+                    : unifiedProduct.price.toString();
+
+                const targetCompareAtPrice = unifiedProduct.salePrice && unifiedProduct.salePrice < unifiedProduct.price
+                    ? unifiedProduct.price.toString()
+                    : undefined;
+
+                if (variant.price !== targetPrice || variant.compareAtPrice !== targetCompareAtPrice) {
+                    const variantUpdateMutation = `
+                        mutation productVariantUpdate($input: ProductVariantInput!) {
+                            productVariantUpdate(input: $input) {
+                                productVariant {
+                                    id
+                                    price
+                                    compareAtPrice
+                                }
+                                userErrors {
+                                    field
+                                    message
+                                }
+                            }
+                        }
+                    `;
+
+                    const variantInput: any = {
+                        id: variant.id,
+                        price: targetPrice
+                    };
+
+                    if (targetCompareAtPrice) {
+                        variantInput.compareAtPrice = targetCompareAtPrice;
+                    }
+
+                    const variantResponse = await client.request(variantUpdateMutation, {
+                        variables: { input: variantInput }
+                    });
+
+                    if (variantResponse.data?.productVariantUpdate?.userErrors?.length > 0) {
+                        const errors = variantResponse.data.productVariantUpdate.userErrors;
+                        logger.warn('GraphQL variant update userErrors:', errors);
+                    } else {
+                        changed = true;
+                        logger.info(`Updated variant price with GraphQL: ${variant.id}`);
+                    }
+                }
+
+                // 检查并更新库存
+                if (variant.inventoryItem?.id) {
+                    await this.checkAndUpdateInventoryGraphQL(session, variant, unifiedProduct.availability);
+                }
+            }
+
+            // 处理图片更新
+            if (unifiedProduct.imageUrl) {
+                const currentImageUrl = currentProduct.images?.edges?.[0]?.node?.url;
+                if (currentImageUrl !== unifiedProduct.imageUrl) {
+                    logger.info(`Updating product image with GraphQL from '${currentImageUrl}' to '${unifiedProduct.imageUrl}'`);
+
+                    // 验证新图片URL
+                    if (this.isValidImageUrlFormat(unifiedProduct.imageUrl)) {
+                        try {
+                            const imageAccessible = await this.testImageAccess(unifiedProduct.imageUrl);
+
+                            if (imageAccessible) {
+                                const imageAdded = await this.addImageToProductWithGraphQL(
+                                    session,
+                                    productId,
+                                    unifiedProduct.imageUrl,
+                                    unifiedProduct.title
+                                );
+
+                                if (imageAdded) {
+                                    changed = true;
+                                    logger.info(`Image updated successfully with GraphQL: ${unifiedProduct.imageUrl}`);
+                                } else {
+                                    logger.warn(`Failed to update image with GraphQL: ${unifiedProduct.imageUrl}`);
+                                }
+                            } else {
+                                logger.warn(`New image URL not accessible, keeping existing image: ${unifiedProduct.imageUrl}`);
+                            }
+                        } catch (imageError) {
+                            logger.warn(`Error testing new image access, keeping existing image:`, imageError);
+                        }
+                    } else {
+                        logger.warn(`Invalid new image URL format, keeping existing image: ${unifiedProduct.imageUrl}`);
+                    }
+                }
+            }
+
+            if (changed) {
+                logger.info(`Product updated with GraphQL: ${productId}`);
+            } else {
+                logger.info(`No changes needed for product: ${productId}`);
+            }
+
+            return currentProduct;
 
         } catch (error) {
             logger.error('Error updating product with GraphQL:', error);
             throw error;
         }
+    }
+
+    /**
+     * 使用GraphQL检查并更新库存
+     */
+    private async checkAndUpdateInventoryGraphQL(session: Session, variant: any, availability?: boolean): Promise<void> {
+        try {
+            if (!variant.inventoryItem?.id) {
+                logger.warn(`Variant ${variant.id} has no inventory item, skipping inventory check`);
+                return;
+            }
+
+            const client = new this.shopify.clients.Graphql({ session });
+            const defaultInventoryQuantity = parseInt(process.env.SHOPIFY_DEFAULT_PRODUCT_INVENTORY || '99');
+
+            logger.info(`Checking inventory with GraphQL for variant ${variant.id}, availability: ${availability}, default quantity: ${defaultInventoryQuantity}`);
+
+            // 获取库存信息
+            const inventoryQuery = `
+                query getInventoryLevels($inventoryItemId: ID!) {
+                    inventoryItem(id: $inventoryItemId) {
+                        id
+                        inventoryLevels(first: 10) {
+                            edges {
+                                node {
+                                    id
+                                    available
+                                    location {
+                                        id
+                                        name
+                                        fulfillmentService {
+                                            serviceName
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            `;
+
+            const inventoryResponse = await client.request(inventoryQuery, {
+                variables: { inventoryItemId: variant.inventoryItem.id }
+            });
+
+            const inventoryLevels = inventoryResponse.data?.inventoryItem?.inventoryLevels?.edges || [];
+            let totalInventory = 0;
+
+            for (const edge of inventoryLevels) {
+                const level = edge.node;
+                if (level.available !== null && level.available !== undefined) {
+                    totalInventory += level.available;
+                }
+            }
+
+            logger.info(`Current total inventory for variant ${variant.id}: ${totalInventory}, availability: ${availability}`);
+
+            // 根据availability状态决定库存设置策略
+            let needsUpdate = false;
+            let targetQuantity = totalInventory;
+
+            if (availability === false && totalInventory > 0) {
+                targetQuantity = 0;
+                needsUpdate = true;
+                logger.info(`Product marked as out of stock, setting inventory to 0 (was ${totalInventory})`);
+            } else if (availability === true && totalInventory === 0) {
+                targetQuantity = defaultInventoryQuantity;
+                needsUpdate = true;
+                logger.info(`Product marked as in stock but has 0 inventory, setting to default quantity: ${defaultInventoryQuantity}`);
+            } else if (availability === true && totalInventory < defaultInventoryQuantity) {
+                targetQuantity = defaultInventoryQuantity;
+                needsUpdate = true;
+                logger.info(`Product has low inventory (${totalInventory}), updating to default quantity: ${defaultInventoryQuantity}`);
+            }
+
+            if (needsUpdate && inventoryLevels.length > 0) {
+                // 找到最合适的位置进行库存调整
+                let targetLocation = inventoryLevels.find((edge: any) => {
+                    const location = edge.node.location;
+                    return location.fulfillmentService?.serviceName !== 'Fulfillment Service';
+                });
+
+                if (!targetLocation) {
+                    targetLocation = inventoryLevels[0];
+                }
+
+                const locationId = targetLocation.node.location.id;
+                const inventoryLevelId = targetLocation.node.id;
+
+                // 使用GraphQL调整库存
+                const inventoryMutation = `
+                    mutation inventoryAdjustQuantity($input: InventoryAdjustQuantityInput!) {
+                        inventoryAdjustQuantity(input: $input) {
+                            inventoryLevel {
+                                id
+                                available
+                            }
+                            userErrors {
+                                field
+                                message
+                            }
+                        }
+                    }
+                `;
+
+                const currentAvailable = targetLocation.node.available || 0;
+                const quantityDelta = targetQuantity - currentAvailable;
+
+                if (quantityDelta !== 0) {
+                    const adjustInput = {
+                        inventoryLevelId: inventoryLevelId,
+                        availableDelta: quantityDelta
+                    };
+
+                    const adjustResponse = await client.request(inventoryMutation, {
+                        variables: { input: adjustInput }
+                    });
+
+                    if (adjustResponse.data?.inventoryAdjustQuantity?.userErrors?.length > 0) {
+                        const errors = adjustResponse.data.inventoryAdjustQuantity.userErrors;
+                        logger.warn('GraphQL inventory adjustment userErrors:', errors);
+                    } else {
+                        logger.info(`Successfully adjusted inventory with GraphQL for variant ${variant.id} by ${quantityDelta} (new total: ${targetQuantity})`);
+                    }
+                }
+            } else if (!needsUpdate) {
+                logger.info(`Inventory for variant ${variant.id} already matches availability status (${totalInventory} units, availability: ${availability})`);
+            }
+
+        } catch (error) {
+            logger.error(`Error checking/updating inventory with GraphQL for variant ${variant.id}:`, error);
+            // 不抛出错误，避免影响产品更新流程
+        }
+    }
+
+    /**
+     * 检测并修复图片格式不匹配问题
+     */
+    private async detectAndFixImageFormat(imageUrl: string): Promise<string> {
+        try {
+            logger.info(`Starting enhanced image format detection for: ${imageUrl}`);
+
+            // 1. 优先检查是否为Demandware或其他已知问题服务
+            if (this.isProblematicImageService(imageUrl)) {
+                logger.info(`Problematic image service detected, using proxy immediately: ${imageUrl}`);
+                return this.generateProxyUrl(imageUrl, true); // 强制修复
+            }
+
+            // 2. 检查是否为动态图片服务，优先处理
+            if (this.isDynamicImageService(imageUrl)) {
+                const optimizedUrl = this.optimizeImageUrlForShopify(imageUrl);
+                logger.info(`Optimized dynamic image service URL: ${optimizedUrl}`);
+
+                // 验证优化后的URL是否可访问
+                const isAccessible = await this.validateImageUrl(optimizedUrl);
+                if (isAccessible) {
+                    return optimizedUrl;
+                } else {
+                    logger.warn(`Optimized URL not accessible, using proxy: ${optimizedUrl}`);
+                    return this.generateProxyUrl(imageUrl, true);
+                }
+            }
+
+            // 3. 尝试获取图片的实际格式
+            const formatInfo = await this.analyzeImageFormat(imageUrl);
+
+            if (formatInfo.success) {
+                const { contentType, urlExtension, actualFormat } = formatInfo;
+
+                // 4. 检查格式匹配性
+                if (actualFormat && urlExtension) {
+                    const isFormatMismatch = !this.isFormatCompatible(urlExtension, actualFormat);
+
+                    if (isFormatMismatch) {
+                        logger.warn(`Image format mismatch detected: URL extension=${urlExtension}, actual format=${actualFormat}`);
+
+                        // 使用代理服务进行格式修复，而不是简单的URL修改
+                        logger.info(`Using proxy service for format correction: ${imageUrl}`);
+                        return this.generateProxyUrl(imageUrl, true);
+                    }
+                } else if (!actualFormat && contentType && !contentType.startsWith('image/')) {
+                    // 如果Content-Type不是图片类型，使用代理服务
+                    logger.warn(`Non-image content type detected: ${contentType}, using proxy for format fix`);
+                    return this.generateProxyUrl(imageUrl, true);
+                }
+            } else {
+                logger.warn(`Image format analysis failed for ${imageUrl}, using proxy service as fallback`);
+                return this.generateProxyUrl(imageUrl, true);
+            }
+
+            // 5. 应用通用优化
+            const generalOptimizedUrl = this.optimizeImageUrlForShopify(imageUrl);
+
+            if (generalOptimizedUrl !== imageUrl) {
+                logger.info(`Applied general optimization: ${generalOptimizedUrl}`);
+
+                // 验证优化后的URL
+                const isAccessible = await this.validateImageUrl(generalOptimizedUrl);
+                if (isAccessible) {
+                    return generalOptimizedUrl;
+                } else {
+                    logger.warn(`General optimization failed, using proxy: ${generalOptimizedUrl}`);
+                    return this.generateProxyUrl(imageUrl, true);
+                }
+            }
+
+            logger.info(`No optimization needed for: ${imageUrl}`);
+            return imageUrl;
+
+        } catch (error) {
+            logger.error(`Error in enhanced image format detection for ${imageUrl}:`, error);
+
+            // 6. 错误情况下使用代理服务作为保底
+            logger.info(`Using proxy service as error fallback: ${imageUrl}`);
+            return this.generateProxyUrl(imageUrl, true);
+        }
+    }
+
+    /**
+     * 检查是否为已知有问题的图片服务
+     */
+    private isProblematicImageService(url: string): boolean {
+        const problematicServices = [
+            'demandware.static',
+            'lecreuset.com',
+            'scene7.com',
+            // 添加其他已知有格式问题的服务
+        ];
+
+        return problematicServices.some(service => url.includes(service));
+    }
+
+    /**
+     * 生成图片代理URL
+     */
+    private generateProxyUrl(originalUrl: string, forceFix: boolean = false): string {
+        const appUrl = process.env.SHOPIFY_APP_URL || process.env.APPLICATION_URL || 'https://shopifydev.amoze.cc';
+        const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(originalUrl)}&format=jpg`;
+
+        if (forceFix) {
+            return `${proxyUrl}&fix=true`;
+        }
+
+        return proxyUrl;
+    }
+
+    /**
+     * 分析图片格式信息
+     */
+    private async analyzeImageFormat(imageUrl: string): Promise<{
+        success: boolean;
+        contentType?: string;
+        urlExtension?: string;
+        actualFormat?: string;
+        contentLength?: string;
+    }> {
+        try {
+            const response = await fetch(imageUrl, {
+                method: 'HEAD',
+                signal: AbortSignal.timeout(8000),
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Cache-Control': 'no-cache'
+                }
+            });
+
+            if (!response.ok) {
+                logger.warn(`Image HEAD request failed for ${imageUrl}: ${response.status} ${response.statusText}`);
+                return { success: false };
+            }
+
+            const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+            const contentLength = response.headers.get('content-length');
+            const urlExtension = this.getImageExtensionFromUrl(imageUrl);
+            const actualFormat = this.getFormatFromContentType(contentType);
+
+            logger.debug(`Image format analysis for ${imageUrl}:`, {
+                contentType,
+                contentLength,
+                urlExtension,
+                actualFormat
+            });
+
+            return {
+                success: true,
+                contentType,
+                urlExtension: urlExtension || undefined,
+                actualFormat: actualFormat || undefined,
+                contentLength: contentLength || undefined
+            };
+
+        } catch (error) {
+            logger.warn(`Error analyzing image format for ${imageUrl}:`, error);
+            return { success: false };
+        }
+    }
+
+    /**
+     * 验证图片URL是否可访问
+     */
+    private async validateImageUrl(imageUrl: string, timeout: number = 5000): Promise<boolean> {
+        try {
+            const response = await fetch(imageUrl, {
+                method: 'HEAD',
+                signal: AbortSignal.timeout(timeout),
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (compatible; Shopify/1.0; +https://shopify.com/)',
+                    'Accept': 'image/*,*/*;q=0.8'
+                }
+            });
+
+            if (response.ok) {
+                const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+                return contentType.startsWith('image/') || contentType.includes('octet-stream') || contentType === '';
+            }
+
+            return false;
+        } catch (error) {
+            logger.debug(`Image URL validation failed for ${imageUrl}:`, error);
+            return false;
+        }
+    }
+
+    /**
+     * 强制设置图片格式
+     */
+    private forceImageFormat(imageUrl: string, format: string): string {
+        try {
+            const urlObj = new URL(imageUrl);
+
+            // 添加格式参数
+            urlObj.searchParams.set('format', format);
+            urlObj.searchParams.set('fmt', format);
+
+            // 如果是支持的服务，添加质量参数
+            if (this.isDynamicImageService(imageUrl)) {
+                urlObj.searchParams.set('qlt', '85');
+                if (format === 'jpg') {
+                    urlObj.searchParams.set('wid', '800');
+                }
+            }
+
+            return urlObj.toString();
+        } catch (error) {
+            logger.warn(`Error forcing image format for ${imageUrl}:`, error);
+            return `${imageUrl}${imageUrl.includes('?') ? '&' : '?'}format=${format}&fmt=${format}`;
+        }
+    }
+
+    /**
+     * 从URL获取图片扩展名
+     */
+    private getImageExtensionFromUrl(url: string): string | null {
+        try {
+            const urlObj = new URL(url);
+            const pathname = urlObj.pathname.toLowerCase();
+            const match = pathname.match(/\.([a-z0-9]+)(?:\?|$)/);
+            return match ? match[1] : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * 从Content-Type获取图片格式
+     */
+    private getFormatFromContentType(contentType: string): string | null {
+        const formatMap: { [key: string]: string } = {
+            'image/jpeg': 'jpg',
+            'image/jpg': 'jpg',
+            'image/png': 'png',
+            'image/gif': 'gif',
+            'image/webp': 'webp',
+            'image/svg+xml': 'svg',
+            'image/bmp': 'bmp',
+            'image/tiff': 'tiff'
+        };
+
+        for (const [type, format] of Object.entries(formatMap)) {
+            if (contentType.includes(type)) {
+                return format;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 检查格式是否兼容
+     */
+    private isFormatCompatible(urlExtension: string, actualFormat: string): boolean {
+        // 标准化扩展名
+        const normalizeExt = (ext: string) => ext.toLowerCase().replace('jpeg', 'jpg');
+
+        return normalizeExt(urlExtension) === normalizeExt(actualFormat);
+    }
+
+    /**
+     * 修复图片URL扩展名
+     */
+    private fixImageUrlExtension(originalUrl: string, correctFormat: string): string {
+        try {
+            const urlObj = new URL(originalUrl);
+
+            // 替换路径中的扩展名
+            urlObj.pathname = urlObj.pathname.replace(/\.[a-z0-9]+(\?|$)/, `.${correctFormat}$1`);
+
+            // 如果没有扩展名，添加正确的扩展名
+            if (!urlObj.pathname.match(/\.[a-z0-9]+$/)) {
+                urlObj.pathname += `.${correctFormat}`;
+            }
+
+            return urlObj.toString();
+        } catch {
+            return originalUrl;
+        }
+    }
+
+    /**
+     * 检查是否为动态图片服务
+     */
+    private isDynamicImageService(url: string): boolean {
+        const dynamicServices = [
+            'demandware.static',
+            'scene7.com',
+            'akamaized.net',
+            'cloudinary.com',
+            'imagekit.io',
+            'fastly.com'
+        ];
+
+        return dynamicServices.some(service => url.includes(service));
+    }
+
+    /**
+     * 针对Shopify优化图片URL
+     */
+    private optimizeImageUrlForShopify(url: string): string {
+        try {
+            const urlObj = new URL(url);
+
+            // 1. 添加或修改参数以确保格式兼容性
+            if (url.includes('demandware.static')) {
+                // Demandware/Salesforce Commerce Cloud优化
+                urlObj.searchParams.set('fmt', 'jpg');
+                urlObj.searchParams.set('qlt', '85'); // 质量设置
+                urlObj.searchParams.set('wid', '800'); // 宽度限制
+            }
+
+            // 2. 移除可能导致问题的参数
+            const problematicParams = ['cache', 'timestamp', 'v', 'version'];
+            problematicParams.forEach(param => {
+                urlObj.searchParams.delete(param);
+            });
+
+            // 3. 确保使用HTTPS
+            urlObj.protocol = 'https:';
+
+            // 4. 添加Shopify友好的参数
+            urlObj.searchParams.set('format', 'jpg');
+
+            return urlObj.toString();
+        } catch {
+            return url;
+        }
+    }
+
+    /**
+     * 生成高级备用图片URL列表
+     */
+    private generateAdvancedAlternativeImageUrls(originalUrl: string): string[] {
+        const alternatives: string[] = [];
+
+        try {
+            // 1. 首先尝试格式检测和修复
+            const detectedUrl = this.optimizeImageUrlForShopify(originalUrl);
+            if (detectedUrl !== originalUrl) {
+                alternatives.push(detectedUrl);
+            }
+
+            // 2. 尝试不同的图片格式
+            const formats = ['jpg', 'jpeg', 'png', 'webp'];
+            formats.forEach(format => {
+                const formatUrl = this.fixImageUrlExtension(originalUrl, format);
+                if (formatUrl !== originalUrl && !alternatives.includes(formatUrl)) {
+                    alternatives.push(formatUrl);
+                }
+            });
+
+            // 3. 添加格式参数的变体
+            const urlObj = new URL(originalUrl);
+
+            // JPG变体
+            const jpgVariants = [
+                this.addFormatParams(urlObj, { fmt: 'jpg', format: 'jpg' }),
+                this.addFormatParams(urlObj, { f: 'jpg' }),
+                this.addFormatParams(urlObj, { type: 'jpg' })
+            ];
+
+            jpgVariants.forEach(variant => {
+                if (!alternatives.includes(variant)) {
+                    alternatives.push(variant);
+                }
+            });
+
+            // 4. 尝试移除所有查询参数（获取原始图片）
+            const cleanUrl = `${urlObj.protocol}//${urlObj.host}${urlObj.pathname}`;
+            if (!alternatives.includes(cleanUrl)) {
+                alternatives.push(cleanUrl);
+            }
+
+            // 5. 使用图片代理服务作为最后备选
+            const appUrl = process.env.SHOPIFY_APP_URL || process.env.APPLICATION_URL || 'https://shopifydev.amoze.cc';
+            const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(originalUrl)}&format=jpg`;
+            alternatives.push(proxyUrl);
+
+        } catch (error) {
+            logger.debug(`Error generating advanced alternatives for ${originalUrl}:`, error);
+        }
+
+        // 去重并限制数量
+        return [...new Set(alternatives)].slice(0, 8);
+    }
+
+    /**
+     * 添加格式参数到URL
+     */
+    private addFormatParams(urlObj: URL, params: { [key: string]: string }): string {
+        const newUrl = new URL(urlObj.toString());
+        Object.entries(params).forEach(([key, value]) => {
+            newUrl.searchParams.set(key, value);
+        });
+        return newUrl.toString();
     }
 } 

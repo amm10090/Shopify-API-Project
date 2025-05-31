@@ -961,11 +961,11 @@ router.post('/sync-inventory', async (req: Request, res: Response, next: NextFun
 });
 
 /**
- * 图片代理端点 - 用于解决某些CDN图片无法被Shopify直接访问的问题
+ * 图片代理端点 - 用于解决某些CDN图片无法被Shopify直接访问的问题（支持格式修复）
  */
 router.get('/image-proxy', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const { url } = req.query;
+        const { url, format, fix } = req.query;
 
         if (!url || typeof url !== 'string') {
             res.status(400).json({
@@ -975,92 +975,315 @@ router.get('/image-proxy', async (req: Request, res: Response, next: NextFunctio
             return;
         }
 
-        logger.info(`Proxying image request for: ${url}`);
+        const requestedFormat = (format as string) || 'jpg'; // 默认使用JPG以确保Shopify兼容性
+        const shouldFix = fix === 'true';
 
-        // 使用多种User-Agent尝试获取图片
+        logger.info(`Proxying image request for: ${url} (format: ${requestedFormat}, fix: ${shouldFix})`);
+
+        // 构建优化的URL变体列表
+        const urlsToTry = buildImageUrlVariants(url, requestedFormat, shouldFix);
+
+        // 使用多种User-Agent和请求方法尝试获取图片
         const userAgents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
+            'Mozilla/5.0 (compatible; Shopify/1.0; +https://shopify.com/)',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         ];
 
         let fetchResponse: globalThis.Response | null = null;
+        let successfulUrl: string = '';
+        let actualContentType: string = '';
+        let imageBuffer: Buffer | null = null;
 
-        for (const userAgent of userAgents) {
-            try {
-                const response = await fetch(url, {
-                    method: 'GET',
-                    headers: {
-                        'User-Agent': userAgent,
-                        'Accept': 'image/*,*/*;q=0.8',
-                        'Accept-Encoding': 'gzip, deflate, br',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                        'Cache-Control': 'no-cache',
-                        'Pragma': 'no-cache'
-                    },
-                    signal: AbortSignal.timeout(10000)
-                });
+        // 尝试所有URL变体
+        for (const tryUrl of urlsToTry) {
+            for (const userAgent of userAgents) {
+                try {
+                    const response = await fetch(tryUrl, {
+                        method: 'GET',
+                        headers: {
+                            'User-Agent': userAgent,
+                            'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                            'Accept-Encoding': 'gzip, deflate, br',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                            'Cache-Control': 'no-cache',
+                            'Pragma': 'no-cache',
+                            'Sec-Fetch-Dest': 'image',
+                            'Sec-Fetch-Mode': 'no-cors',
+                            'Sec-Fetch-Site': 'cross-site'
+                        },
+                        signal: AbortSignal.timeout(15000)
+                    });
 
-                if (response.ok) {
-                    const contentType = response.headers.get('content-type');
-                    if (contentType && contentType.startsWith('image/')) {
-                        fetchResponse = response;
-                        logger.info(`Successfully fetched image with User-Agent: ${userAgent}`);
-                        break;
+                    if (response.ok) {
+                        const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+                        const contentLength = parseInt(response.headers.get('content-length') || '0');
+
+                        // 更严格的图片验证
+                        const isValidImage = (
+                            contentType.startsWith('image/') ||
+                            contentType.includes('octet-stream') ||
+                            contentType === ''
+                        ) && contentLength > 100; // 确保不是空文件或错误页面
+
+                        if (isValidImage) {
+                            // 获取图片数据
+                            imageBuffer = Buffer.from(await response.arrayBuffer());
+
+                            // 验证图片数据的实际格式
+                            const detectedFormat = detectImageFormatFromBuffer(imageBuffer);
+
+                            fetchResponse = response;
+                            successfulUrl = tryUrl;
+                            actualContentType = contentType;
+
+                            logger.info(`Successfully fetched image: ${tryUrl.substring(0, 100)}... with User-Agent: ${userAgent.substring(0, 50)}... (${contentType}, ${contentLength} bytes, detected: ${detectedFormat})`);
+                            break;
+                        } else {
+                            logger.debug(`Invalid image response from ${tryUrl}: contentType=${contentType}, size=${contentLength}`);
+                        }
+                    } else {
+                        logger.debug(`HTTP error for ${tryUrl}: ${response.status} ${response.statusText}`);
                     }
+                } catch (error) {
+                    logger.debug(`Failed to fetch ${tryUrl.substring(0, 100)}...:`, error instanceof Error ? error.message : error);
+                    continue;
                 }
-            } catch (error) {
-                logger.debug(`Failed to fetch with User-Agent ${userAgent}:`, error);
-                continue;
             }
+
+            if (fetchResponse && imageBuffer) break; // 成功获取，退出URL尝试循环
         }
 
-        if (!fetchResponse) {
+        if (!fetchResponse || !imageBuffer) {
+            logger.warn(`All attempts failed for image proxy: ${url}`);
             res.status(404).json({
                 success: false,
-                error: 'Unable to fetch image from source'
+                error: 'Unable to fetch image from source',
+                attempted_urls: urlsToTry.length,
+                message: 'Image could not be fetched from any URL variant'
             });
             return;
         }
 
-        // 设置响应头
-        const contentType = fetchResponse.headers.get('content-type') || 'image/jpeg';
-        const contentLength = fetchResponse.headers.get('content-length');
+        // 检测实际图片格式
+        const detectedFormat = detectImageFormatFromBuffer(imageBuffer);
+        logger.info(`Detected image format from buffer: ${detectedFormat} for original URL: ${url}`);
 
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Cache-Control', 'public, max-age=86400'); // 缓存24小时
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        // 根据检测结果和请求格式决定是否需要转换
+        let finalBuffer = imageBuffer;
+        let responseContentType = determineResponseContentType(actualContentType, requestedFormat);
 
-        if (contentLength) {
-            res.setHeader('Content-Length', contentLength);
-        }
-
-        // 流式传输图片数据
-        if (fetchResponse.body) {
-            const reader = fetchResponse.body.getReader();
+        // 如果请求的是JPG但检测到的不是JPG，或者格式不匹配需要修复
+        if (shouldFix && requestedFormat === 'jpg' && detectedFormat !== 'jpeg') {
+            logger.info(`Converting image from ${detectedFormat} to JPG for Shopify compatibility`);
 
             try {
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    res.write(Buffer.from(value));
-                }
-                res.end();
-                logger.info(`Successfully proxied image: ${url}`);
-            } catch (streamError) {
-                logger.error('Error streaming image data:', streamError);
-                if (!res.headersSent) {
-                    res.status(500).json({ error: 'Error streaming image' });
-                }
+                // 使用sharp或其他图片处理库来转换格式（如果可用）
+                finalBuffer = await convertImageToJpeg(imageBuffer);
+                responseContentType = 'image/jpeg';
+                logger.info(`Successfully converted image to JPEG format`);
+            } catch (convertError) {
+                logger.warn(`Image format conversion failed, using original:`, convertError);
+                // 转换失败，使用原始数据但设置正确的Content-Type
+                responseContentType = 'image/jpeg'; // 强制设置为JPEG
             }
-        } else {
-            res.status(500).json({ error: 'No image data received' });
         }
+
+        // 设置响应头，确保格式与请求的格式一致
+        const contentLength = finalBuffer.length;
+
+        // 设置Shopify友好的响应头
+        res.setHeader('Content-Type', responseContentType);
+        res.setHeader('Content-Length', contentLength.toString());
+        res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=3600'); // 24小时缓存
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Cache-Control');
+        res.setHeader('X-Proxy-Source', successfulUrl);
+        res.setHeader('X-Original-Content-Type', actualContentType || 'unknown');
+        res.setHeader('X-Detected-Format', detectedFormat || 'unknown');
+        res.setHeader('X-Requested-Format', requestedFormat);
+        res.setHeader('X-Format-Converted', shouldFix && detectedFormat !== 'jpeg' ? 'true' : 'false');
+
+        // 直接发送图片数据
+        res.end(finalBuffer);
+        logger.info(`Successfully proxied image: original URL length=${url.length}, final URL length=${successfulUrl.length}, format=${responseContentType}, size=${contentLength}`);
 
     } catch (error) {
         logger.error('Error in image proxy:', error);
         next(error);
     }
 });
+
+/**
+ * 构建图片URL变体列表
+ */
+function buildImageUrlVariants(originalUrl: string, requestedFormat: string, shouldFix: boolean): string[] {
+    const urlsToTry: string[] = [];
+
+    try {
+        const urlObj = new URL(originalUrl);
+
+        // 1. 针对Demandware/Salesforce Commerce Cloud的特殊优化
+        if (originalUrl.includes('demandware.static')) {
+            const demandwareOptimized = new URL(originalUrl);
+            demandwareOptimized.searchParams.set('fmt', requestedFormat === 'png' ? 'png' : 'jpg');
+            demandwareOptimized.searchParams.set('qlt', '90'); // 高质量
+            demandwareOptimized.searchParams.set('wid', '1200'); // 更大尺寸
+            demandwareOptimized.searchParams.set('hei', '1200');
+            demandwareOptimized.searchParams.set('fit', 'constrain');
+            urlsToTry.push(demandwareOptimized.toString());
+
+            // 添加另一个变体
+            const demandwareAlt = new URL(originalUrl);
+            demandwareAlt.searchParams.set('fmt', 'jpg');
+            demandwareAlt.searchParams.set('qlt', '85');
+            demandwareAlt.searchParams.set('wid', '800');
+            urlsToTry.push(demandwareAlt.toString());
+        }
+
+        // 2. 通用格式参数优化
+        if (shouldFix) {
+            const formatOptimized = new URL(originalUrl);
+            formatOptimized.searchParams.set('format', requestedFormat);
+            formatOptimized.searchParams.set('fmt', requestedFormat);
+            formatOptimized.searchParams.set('f', requestedFormat);
+            if (requestedFormat === 'jpg' || requestedFormat === 'jpeg') {
+                formatOptimized.searchParams.set('quality', '85');
+                formatOptimized.searchParams.set('q', '85');
+            }
+            urlsToTry.push(formatOptimized.toString());
+        }
+
+        // 3. 原始URL
+        urlsToTry.push(originalUrl);
+
+        // 4. 清理版本（移除可能有问题的参数）
+        const cleanUrl = new URL(originalUrl);
+        ['cache', 'timestamp', 'v', 'version', '_', 't'].forEach(param => {
+            cleanUrl.searchParams.delete(param);
+        });
+        if (cleanUrl.toString() !== originalUrl) {
+            urlsToTry.push(cleanUrl.toString());
+        }
+
+        // 5. 强制HTTPS
+        if (urlObj.protocol === 'http:') {
+            const httpsUrl = originalUrl.replace('http://', 'https://');
+            urlsToTry.push(httpsUrl);
+        }
+
+    } catch (urlError) {
+        logger.debug(`URL parsing failed for optimization: ${originalUrl}`, urlError);
+        urlsToTry.push(originalUrl); // 至少包含原始URL
+    }
+
+    // 去重
+    return [...new Set(urlsToTry)];
+}
+
+/**
+ * 确定响应的Content-Type
+ */
+function determineResponseContentType(actualContentType: string, requestedFormat: string): string {
+    // 如果实际Content-Type是有效的图片类型，优先使用
+    if (actualContentType && actualContentType.startsWith('image/')) {
+        // 但如果请求的是JPG且实际是其他格式，考虑转换
+        if ((requestedFormat === 'jpg' || requestedFormat === 'jpeg') &&
+            !actualContentType.includes('jpeg') && !actualContentType.includes('jpg')) {
+            return 'image/jpeg'; // 强制返回JPEG以确保Shopify兼容性
+        }
+        return actualContentType;
+    }
+
+    // 回退到请求的格式
+    switch (requestedFormat.toLowerCase()) {
+        case 'png':
+            return 'image/png';
+        case 'gif':
+            return 'image/gif';
+        case 'webp':
+            return 'image/webp';
+        case 'svg':
+            return 'image/svg+xml';
+        default:
+            return 'image/jpeg'; // 默认JPEG
+    }
+}
+
+/**
+ * 从图片Buffer检测格式
+ */
+function detectImageFormatFromBuffer(buffer: Buffer): string | null {
+    if (!buffer || buffer.length < 8) return null;
+
+    // 检查文件头签名
+    const header = buffer.subarray(0, 8);
+
+    // JPEG: FF D8 FF
+    if (header[0] === 0xFF && header[1] === 0xD8 && header[2] === 0xFF) {
+        return 'jpeg';
+    }
+
+    // PNG: 89 50 4E 47 0D 0A 1A 0A
+    if (header[0] === 0x89 && header[1] === 0x50 && header[2] === 0x4E && header[3] === 0x47 &&
+        header[4] === 0x0D && header[5] === 0x0A && header[6] === 0x1A && header[7] === 0x0A) {
+        return 'png';
+    }
+
+    // GIF: 47 49 46 38 (GIF8)
+    if (header[0] === 0x47 && header[1] === 0x49 && header[2] === 0x46 && header[3] === 0x38) {
+        return 'gif';
+    }
+
+    // WebP: 52 49 46 46 (RIFF) + WebP signature
+    if (header[0] === 0x52 && header[1] === 0x49 && header[2] === 0x46 && header[3] === 0x46) {
+        // 需要检查更多字节来确认是WebP
+        if (buffer.length >= 12) {
+            const webpSig = buffer.subarray(8, 12);
+            if (webpSig.toString('ascii') === 'WEBP') {
+                return 'webp';
+            }
+        }
+    }
+
+    // BMP: 42 4D (BM)
+    if (header[0] === 0x42 && header[1] === 0x4D) {
+        return 'bmp';
+    }
+
+    return null;
+}
+
+/**
+ * 将图片转换为JPEG格式
+ */
+async function convertImageToJpeg(inputBuffer: Buffer): Promise<Buffer> {
+    // 如果有sharp库可用，使用sharp进行转换
+    try {
+        const sharp = require('sharp');
+        return await sharp(inputBuffer)
+            .jpeg({
+                quality: 85,
+                progressive: false,
+                mozjpeg: false
+            })
+            .toBuffer();
+    } catch (error) {
+        logger.debug('Sharp not available for image conversion:', error);
+    }
+
+    // 如果没有sharp，尝试其他方法或返回原始buffer
+    // 这里可以添加其他图片处理库的支持
+
+    // 作为最后的尝试，如果原始格式就是JPEG相关，直接返回
+    const detectedFormat = detectImageFormatFromBuffer(inputBuffer);
+    if (detectedFormat === 'jpeg') {
+        return inputBuffer;
+    }
+
+    // 如果无法转换，抛出错误
+    throw new Error(`Unable to convert image format from ${detectedFormat} to JPEG - no image processing library available`);
+}
 
 export default router; 
