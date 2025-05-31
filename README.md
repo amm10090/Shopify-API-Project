@@ -68,6 +68,10 @@ CJ_API_KEY=your_cj_api_key
 CJ_WEBSITE_ID=your_cj_website_id
 PEPPERJAM_API_KEY=your_pepperjam_api_key
 PEPPERJAM_PROGRAM_ID=your_pepperjam_program_id
+
+# API类型选择 (解决REST API弃用警告)
+SHOPIFY_USE_GRAPHQL=true
+SHOPIFY_SUPPRESS_REST_DEPRECATION_WARNINGS=true
 ```
 
 ### 4. 数据库设置
@@ -158,6 +162,58 @@ SHOPIFY_APP_URL=https://your-current-tunnel.trycloudflare.com
 2. **查看日志**: 检查服务器日志中的CSP和CORS相关信息
 3. **浏览器开发者工具**: 查看Console和Network标签中的错误信息
 4. **测试嵌入**: 直接访问Shopify Admin中的应用页面
+
+## 🚨 常见问题排查
+
+### API弃用警告解决方案
+
+#### 问题症状
+PM2日志中出现大量 `[shopify-api/WARNING] API Deprecation Notice` 警告：
+
+```
+[shopify-api/WARNING] API Deprecation Notice: {"message":"https://shopify.dev/api/admin-rest/latest/resources/product","path":"products"}
+```
+
+#### 解决方法
+
+1. **启用GraphQL模式** (推荐)
+   ```env
+   SHOPIFY_USE_GRAPHQL=true
+   ```
+
+2. **或者抑制警告** (临时方案)
+   ```env
+   SHOPIFY_SUPPRESS_REST_DEPRECATION_WARNINGS=true
+   ```
+
+3. **重启应用**
+   ```bash
+   pm2 restart shopify-api-project
+   ```
+
+#### 技术细节
+- 应用智能选择API类型：`SHOPIFY_USE_GRAPHQL=true` 时优先使用GraphQL
+- GraphQL是Shopify推荐的新标准，性能更好且不会产生弃用警告
+- REST API方法仍保留作为fallback选项
+
+### 其他常见问题
+
+#### 1. 数据库连接失败
+```bash
+# 检查数据库状态
+sudo systemctl status postgresql
+# 重启数据库
+sudo systemctl restart postgresql
+```
+
+#### 2. Shopify认证失败
+- 检查 `SHOPIFY_API_KEY` 和 `SHOPIFY_API_SECRET` 是否正确
+- 确认应用URL与配置的隧道URL一致
+
+#### 3. API配额限制
+- CJ和Pepperjam API都有请求频率限制
+- 查看日志中的API响应状态码
+- 必要时调整 `REQUEST_DELAY` 参数
 
 ## 📦 构建和部署
 

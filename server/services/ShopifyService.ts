@@ -8,9 +8,11 @@ import { getShopifyApi } from '@server/config/shopify';
 export class ShopifyService {
     private shopify: any;
     private isCustomApp: boolean;
+    private useGraphQL: boolean;
 
     constructor() {
         this.isCustomApp = process.env.SHOPIFY_APP_TYPE === 'custom';
+        this.useGraphQL = process.env.SHOPIFY_USE_GRAPHQL === 'true';
 
         // 验证必需的环境变量
         const requiredVars = ['SHOPIFY_API_KEY', 'SHOPIFY_API_SECRET'];
@@ -170,9 +172,21 @@ export class ShopifyService {
     }
 
     /**
-     * 根据SKU查找产品
+     * 根据SKU查找产品（智能选择API）
      */
     async getProductBySku(session: Session, sku: string): Promise<any> {
+        // 优先使用GraphQL避免弃用警告
+        if (this.useGraphQL) {
+            return this.getProductBySkuWithGraphQL(session, sku);
+        }
+
+        return this.getProductBySkuRest(session, sku);
+    }
+
+    /**
+     * 根据SKU查找产品（REST API版本）
+     */
+    async getProductBySkuRest(session: Session, sku: string): Promise<any> {
         try {
             // 验证session和必要的参数
             if (!session) {
@@ -240,9 +254,21 @@ export class ShopifyService {
     }
 
     /**
-     * 创建新产品
+     * 创建新产品（智能选择API）
      */
     async createProduct(session: Session, unifiedProduct: UnifiedProduct, status: string = 'draft'): Promise<any> {
+        // 优先使用GraphQL避免弃用警告
+        if (this.useGraphQL) {
+            return this.createProductWithGraphQL(session, unifiedProduct, status);
+        }
+
+        return this.createProductRest(session, unifiedProduct, status);
+    }
+
+    /**
+     * 创建新产品（REST API版本）
+     */
+    async createProductRest(session: Session, unifiedProduct: UnifiedProduct, status: string = 'draft'): Promise<any> {
         try {
             logger.info(`Creating Shopify product: SKU='${unifiedProduct.sku}', Title='${unifiedProduct.title}'`);
 
@@ -831,6 +857,156 @@ export class ShopifyService {
         } catch (error) {
             logger.error(`Error syncing inventory for product ${shopifyProduct.id}:`, error);
             return { synced: false, error: error instanceof Error ? error.message : 'Unknown error' };
+        }
+    }
+
+    /**
+     * 使用GraphQL创建产品（替代REST API）
+     */
+    async createProductWithGraphQL(session: Session, unifiedProduct: UnifiedProduct, status: string = 'draft'): Promise<any> {
+        try {
+            const client = new this.shopify.clients.Graphql({ session });
+
+            const mutation = `
+                mutation productCreate($input: ProductInput!) {
+                    productCreate(input: $input) {
+                        product {
+                            id
+                            title
+                            handle
+                            status
+                            variants(first: 1) {
+                                edges {
+                                    node {
+                                        id
+                                        sku
+                                        price
+                                        compareAtPrice
+                                        inventoryItem {
+                                            id
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        userErrors {
+                            field
+                            message
+                        }
+                    }
+                }
+            `;
+
+            const input = {
+                title: unifiedProduct.title,
+                bodyHtml: unifiedProduct.description,
+                vendor: unifiedProduct.brandName,
+                productType: 'Affiliate Product',
+                status: status.toUpperCase(),
+                tags: ['affiliate', 'imported', unifiedProduct.sourceApi],
+                handle: unifiedProduct.title
+                    .toLowerCase()
+                    .replace(/[^a-z0-9\s-]/g, '')
+                    .replace(/\s+/g, '-')
+                    .replace(/-+/g, '-')
+                    .replace(/^-|-$/g, ''),
+                variants: [{
+                    price: unifiedProduct.price.toString(),
+                    compareAtPrice: unifiedProduct.salePrice ? unifiedProduct.salePrice.toString() : undefined,
+                    sku: unifiedProduct.sku || `${unifiedProduct.sourceApi}-${unifiedProduct.sourceProductId}`,
+                    inventoryPolicy: 'CONTINUE',
+                    inventoryManagement: 'SHOPIFY',
+                    requiresShipping: true,
+                    taxable: true
+                }],
+                images: unifiedProduct.imageUrl ? [{
+                    src: unifiedProduct.imageUrl,
+                    altText: unifiedProduct.title
+                }] : []
+            };
+
+            const response = await client.request(mutation, {
+                variables: { input }
+            });
+
+            if (response.data?.productCreate?.userErrors?.length > 0) {
+                const errors = response.data.productCreate.userErrors;
+                logger.error('GraphQL product creation errors:', errors);
+                throw new Error(`Product creation failed: ${errors.map((e: any) => e.message).join(', ')}`);
+            }
+
+            const product = response.data?.productCreate?.product;
+            if (!product) {
+                throw new Error('Product creation failed: No product returned');
+            }
+
+            logger.info(`Product created successfully with GraphQL: ${product.id}`);
+            return {
+                id: product.id.replace('gid://shopify/Product/', ''),
+                title: product.title,
+                handle: product.handle,
+                status: product.status
+            };
+
+        } catch (error) {
+            logger.error('Error creating product with GraphQL:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * 使用GraphQL通过SKU查找产品（替代REST API）
+     */
+    async getProductBySkuWithGraphQL(session: Session, sku: string): Promise<any> {
+        try {
+            const client = new this.shopify.clients.Graphql({ session });
+
+            const query = `
+                query getProductBySku($query: String!) {
+                    products(first: 1, query: $query) {
+                        edges {
+                            node {
+                                id
+                                title
+                                handle
+                                status
+                                variants(first: 1) {
+                                    edges {
+                                        node {
+                                            id
+                                            sku
+                                            price
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            `;
+
+            const response = await client.request(query, {
+                variables: {
+                    query: `sku:${sku}`
+                }
+            });
+
+            const products = response.data?.products?.edges;
+            if (!products || products.length === 0) {
+                return null;
+            }
+
+            const product = products[0].node;
+            return {
+                id: product.id.replace('gid://shopify/Product/', ''),
+                title: product.title,
+                handle: product.handle,
+                status: product.status
+            };
+
+        } catch (error) {
+            logger.error('Error finding product by SKU with GraphQL:', error);
+            throw error;
         }
     }
 } 

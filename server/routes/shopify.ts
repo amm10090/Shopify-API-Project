@@ -113,7 +113,7 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
                         unifiedProduct
                     );
                 } else {
-                    // 检查SKU是否已存在
+                    // 检查SKU是否已存在 - 智能选择API类型
                     const existingProduct = await shopifyService.getProductBySku(session, product.sku!);
                     if (existingProduct) {
                         shopifyProduct = await shopifyService.updateProduct(
@@ -122,7 +122,7 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
                             unifiedProduct
                         );
                     } else {
-                        // 创建新产品
+                        // 创建新产品 - 智能选择API类型
                         shopifyProduct = await shopifyService.createProduct(
                             session,
                             unifiedProduct,

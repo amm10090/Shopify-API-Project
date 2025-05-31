@@ -38,6 +38,60 @@ const app = express();
 // 使用环境变量配置端口，生产环境默认3000，开发环境可以使用不同端口
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
+// Cloudflare 隧道特殊处理中间件
+app.use((req, res, next) => {
+    // 强制禁用 QUIC/HTTP3 协议
+    res.setHeader('Alt-Svc', 'clear');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Upgrade', 'h2c');
+
+    // 添加 Cloudflare 兼容性头
+    res.setHeader('CF-Cache-Status', 'DYNAMIC');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    // 强制 HTTP/1.1
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    // 修复 Cloudflare 隧道协议问题
+    if (req.get('CF-Connecting-IP') || req.get('CF-Ray') || req.hostname.includes('.trycloudflare.com') || req.hostname.includes('.amoze.cc')) {
+        // 强制使用 HTTP/1.1，禁用所有升级协议
+        res.setHeader('Connection', 'close');
+        res.removeHeader('Upgrade');
+        res.removeHeader('Upgrade-Insecure-Requests');
+
+        // 添加特殊的 Cloudflare 头
+        res.setHeader('CF-RAY', req.get('CF-Ray') || 'custom');
+        res.setHeader('Server', 'cloudflare');
+    }
+
+    // 添加 CORS 预处理
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin, User-Agent, Cache-Control');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
+    res.setHeader('Access-Control-Max-Age', '86400');
+
+    // 处理预检请求
+    if (req.method === 'OPTIONS') {
+        res.status(200).end();
+        return;
+    }
+
+    // 记录请求信息用于调试
+    console.log(`Cloudflare request: ${req.method} ${req.path}`, {
+        cfRay: req.get('CF-Ray'),
+        cfConnectingIP: req.get('CF-Connecting-IP'),
+        userAgent: req.get('User-Agent'),
+        origin: req.get('Origin'),
+        host: req.get('Host')
+    });
+
+    next();
+});
+
 // Initialize database
 export const prisma = new PrismaClient();
 
@@ -119,7 +173,7 @@ app.use((req, res, next) => {
     // 使用自定义域名
     const applicationUrl = process.env.SHOPIFY_APP_URL ||
         process.env.APPLICATION_URL ||
-        'https://shopify.amoze.cc';
+        'https://shopifydev.amoze.cc';
     const tunnelDomain = new URL(applicationUrl).hostname;
 
     if (shop) {
@@ -161,7 +215,7 @@ app.use(cors({
         // 获取应用URL中的域名
         const applicationUrl = process.env.SHOPIFY_APP_URL ||
             process.env.APPLICATION_URL ||
-            'https://dock-malawi-fu-cocktail.trycloudflare.com'; // 更新为当前URL
+            'https://shopifydev.amoze.cc'; // 更新为当前URL
         const tunnelDomain = new URL(applicationUrl).hostname;
 
         // 允许的域名模式
@@ -199,6 +253,30 @@ app.use(cors({
         'X-Frame-Options'
     ]
 }));
+
+// 添加 QUIC 流错误处理
+app.use((req, res, next) => {
+    // 监听连接错误
+    req.on('error', (err) => {
+        console.error('Request error:', err);
+        if (!res.headersSent) {
+            res.status(400).json({ error: 'Request error', message: err.message });
+        }
+    });
+
+    res.on('error', (err) => {
+        console.error('Response error:', err);
+    });
+
+    // 设置错误处理
+    res.on('close', () => {
+        if (!res.writableEnded) {
+            console.log('Connection closed prematurely');
+        }
+    });
+
+    next();
+});
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -269,17 +347,43 @@ async function startServer() {
 
         // 设置静态文件服务（在 Vite 初始化后，但在服务器启动前）
         if (viteDevServer) {
+            // 添加 Cloudflare 隧道兼容的中间件
+            app.use((req, res, next) => {
+                // 为静态资源添加适当的缓存头
+                if (req.path.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$/)) {
+                    res.setHeader('Cache-Control', 'public, max-age=31536000');
+                    res.setHeader('Access-Control-Allow-Origin', '*');
+                }
+                next();
+            });
+
             // 使用 Vite 中间件处理所有静态资源请求
             app.use(viteDevServer.middlewares);
-            logger.info('Using Vite development server for static files');
+            logger.info('Using Vite development server for static files with Cloudflare optimizations');
         } else {
             // 生产模式或 Vite 不可用时的静态文件服务
             const distPath = path.join(__dirname, '../client');
             if (fs.existsSync(distPath)) {
-                app.use(express.static(distPath, { index: false }));
+                app.use(express.static(distPath, {
+                    index: false,
+                    setHeaders: (res, path) => {
+                        res.setHeader('Access-Control-Allow-Origin', '*');
+                        if (path.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$/)) {
+                            res.setHeader('Cache-Control', 'public, max-age=31536000');
+                        }
+                    }
+                }));
                 logger.info('Serving static files from dist/client');
             } else {
-                app.use(express.static(path.join(__dirname, '../'), { index: false }));
+                app.use(express.static(path.join(__dirname, '../'), {
+                    index: false,
+                    setHeaders: (res, path) => {
+                        res.setHeader('Access-Control-Allow-Origin', '*');
+                        if (path.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$/)) {
+                            res.setHeader('Cache-Control', 'public, max-age=31536000');
+                        }
+                    }
+                }));
                 logger.info('Serving static files from project root');
             }
         }
@@ -295,7 +399,7 @@ async function startServer() {
             if (shop && embedded && !req.query.embedded) {
                 const applicationUrl = process.env.SHOPIFY_APP_URL ||
                     process.env.APPLICATION_URL ||
-                    'https://dock-malawi-fu-cocktail.trycloudflare.com'; // 更新为当前URL
+                    'https://shopifydev.amoze.cc'; // 更新为当前URL
                 const embeddedUrl = `https://admin.shopify.com/store/${shop.replace('.myshopify.com', '')}/apps/${process.env.SHOPIFY_API_KEY || '22c17ecd1ecf677dc1c78552e650bd34'}`;
 
                 logger.info(`Redirecting to embedded app URL: ${embeddedUrl}`);
@@ -395,22 +499,23 @@ async function startServer() {
                     validHost = Buffer.from(`${shop}/admin`).toString('base64');
                     logger.info(`Generated host parameter for custom app: ${validHost}`);
                 }
-                if (shopifyHost) {
+
+                // 验证最终的host参数
+                if (validHost) {
                     // 检查是否已经是base64编码
-                    if (!shopifyHost.match(/^[A-Za-z0-9+/]+=*$/)) {
-                        logger.warn(`Host parameter '${shopifyHost}' doesn't appear to be base64 encoded`);
-                        // 不要自动编码，而是记录警告
-                        // Shopify应该提供正确编码的host参数
+                    if (!validHost.match(/^[A-Za-z0-9+/]+=*$/)) {
+                        logger.warn(`Host parameter '${validHost}' doesn't appear to be base64 encoded`);
                     } else {
                         // 验证base64可以正确解码
                         try {
-                            const decoded = Buffer.from(shopifyHost, 'base64').toString('utf8');
+                            const decoded = Buffer.from(validHost, 'base64').toString('utf8');
                             logger.debug(`Host parameter decoded: ${decoded}`);
                         } catch (error) {
-                            logger.warn(`Host parameter cannot be decoded as base64: ${shopifyHost}`);
+                            logger.warn(`Host parameter cannot be decoded as base64: ${validHost}`);
                         }
                     }
-                } else {
+                } else if (appType !== 'custom') {
+                    // 只有非自定义应用才需要担心缺少host参数
                     logger.warn('No host parameter provided - this may cause App Bridge issues');
                 }
 
@@ -464,7 +569,7 @@ async function startServer() {
         await prisma.$connect();
         logger.info('Connected to database');
 
-        app.listen(PORT, '0.0.0.0', () => {
+        const server = app.listen(PORT, '0.0.0.0', () => {
             const host = process.env.NODE_ENV === 'production'
                 ? process.env.SERVER_HOST || '69.62.86.176'
                 : 'localhost';
@@ -472,6 +577,7 @@ async function startServer() {
             logger.info(`Server running on port ${PORT}`);
             logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
             logger.info(`Access URL: http://${host}:${PORT}`);
+            logger.info(`Cloudflare tunnel optimizations enabled`);
 
             if (process.env.NODE_ENV === 'production') {
                 logger.info('Serving static files from dist/client');
@@ -479,6 +585,29 @@ async function startServer() {
                 logger.info('Using Vite development server for static files');
             } else {
                 logger.info('Serving static files from project root');
+            }
+        });
+
+        // 配置服务器以处理 Cloudflare 隧道
+        server.keepAliveTimeout = 30000; // 30秒
+        server.headersTimeout = 35000; // 35秒
+
+        // 禁用 HTTP/2 服务器推送（可能导致 QUIC 问题）
+        server.on('stream', (stream: any, headers: any) => {
+            stream.on('error', (err: Error) => {
+                console.error('Stream error:', err);
+            });
+        });
+
+        // 处理服务器错误
+        server.on('error', (err: Error) => {
+            console.error('Server error:', err);
+        });
+
+        server.on('clientError', (err: Error, socket: any) => {
+            console.error('Client error:', err);
+            if (!socket.destroyed) {
+                socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
             }
         });
     } catch (error) {
