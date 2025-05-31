@@ -1,5 +1,6 @@
 // 立即导入Vite客户端拦截器（必须在最前面）
 import './utils/viteClientInterceptor'
+import './utils/shopifyIframeHandler'
 
 import React from 'react'
 import ReactDOM from 'react-dom/client'

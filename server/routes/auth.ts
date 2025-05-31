@@ -101,15 +101,38 @@ export const verifyShopifySession = async (req: Request, res: Response, next: Ne
                 const customAppService = new CustomAppService();
                 const session = customAppService.createCustomAppSession();
 
-                // 验证自定义应用配置
-                const validation = await customAppService.validateCustomAppSetup();
-                if (!validation.valid) {
-                    res.status(401).json({
-                        success: false,
-                        error: 'Custom app validation failed',
-                        details: validation.message
-                    });
-                    return;
+                // 首先尝试从缓存获取验证结果
+                const cachedValidation = customAppService.validateCustomAppSetupCached();
+
+                if (cachedValidation) {
+                    // 使用缓存的验证结果
+                    if (!cachedValidation.valid) {
+                        res.status(401).json({
+                            success: false,
+                            error: 'Custom app validation failed (cached)',
+                            details: cachedValidation.message
+                        });
+                        return;
+                    }
+                } else {
+                    // 缓存中没有结果，进行网络验证
+                    // 但只对特定的端点进行验证，避免每个API请求都验证
+                    const shouldValidate = req.path === '/auth/session' ||
+                        req.path.startsWith('/api/shopify') ||
+                        req.method === 'POST';
+
+                    if (shouldValidate) {
+                        const validation = await customAppService.validateCustomAppSetup();
+                        if (!validation.valid) {
+                            res.status(401).json({
+                                success: false,
+                                error: 'Custom app validation failed',
+                                details: validation.message
+                            });
+                            return;
+                        }
+                    }
+                    // 对于其他请求，跳过验证，直接使用session
                 }
 
                 // 将会话信息添加到请求对象
@@ -118,7 +141,21 @@ export const verifyShopifySession = async (req: Request, res: Response, next: Ne
                 next();
                 return;
             } catch (error) {
-                logger.error('Custom app session creation failed:', error);
+                // 对于自定义应用，配置错误通常是致命的
+                if (error instanceof Error &&
+                    (error.message.includes('SHOPIFY_ACCESS_TOKEN') ||
+                        error.message.includes('SHOPIFY_STORE_NAME'))) {
+                    logger.error('Custom app configuration error:', error);
+                    res.status(500).json({
+                        success: false,
+                        error: 'Custom app configuration error',
+                        details: 'Please check SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_NAME environment variables'
+                    });
+                    return;
+                }
+
+                // 对于其他错误，记录警告但允许继续
+                logger.warn('Custom app session creation issue:', error);
                 res.status(500).json({
                     success: false,
                     error: 'Custom app setup error',

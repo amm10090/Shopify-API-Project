@@ -38,6 +38,29 @@ const app = express();
 // 使用环境变量配置端口，生产环境默认3000，开发环境可以使用不同端口
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
+// 简单的错误节流机制
+const errorThrottle = new Map<string, { count: number; lastLogged: number }>();
+const ERROR_LOG_INTERVAL = 60000; // 1分钟内同样的错误只记录一次
+
+function shouldLogError(errorMessage: string, context?: string): boolean {
+    const key = `${context || 'general'}:${errorMessage}`;
+    const now = Date.now();
+    const existing = errorThrottle.get(key);
+
+    if (!existing) {
+        errorThrottle.set(key, { count: 1, lastLogged: now });
+        return true;
+    }
+
+    existing.count++;
+    if (now - existing.lastLogged >= ERROR_LOG_INTERVAL) {
+        existing.lastLogged = now;
+        return true;
+    }
+
+    return false;
+}
+
 // Cloudflare 隧道特殊处理中间件
 app.use((req, res, next) => {
     // 强制禁用 QUIC/HTTP3 协议
@@ -180,6 +203,7 @@ app.use(helmet({
 app.use((req, res, next) => {
     const shop = req.query.shop as string;
     const host = req.query.host as string;
+    const embedded = req.query.embedded === '1';
 
     // 使用自定义域名
     const applicationUrl = process.env.SHOPIFY_APP_URL ||
@@ -187,12 +211,65 @@ app.use((req, res, next) => {
         'https://shopifydev.amoze.cc';
     const tunnelDomain = new URL(applicationUrl).hostname;
 
-    if (shop) {
+    // 针对嵌入式应用设置特殊的权限标头
+    if (embedded && shop) {
         // 验证shop格式
         const sanitizedShop = shop.replace(/[^a-zA-Z0-9\-\.]/g, '');
         const shopDomain = sanitizedShop.includes('.myshopify.com') ? sanitizedShop : `${sanitizedShop}.myshopify.com`;
 
-        // 设置完整的CSP策略，包含所有必要的指令
+        // 为嵌入式应用设置更宽松的权限
+        res.setHeader('Permissions-Policy', [
+            'geolocation=*',
+            'camera=*',
+            'microphone=*',
+            'payment=*',
+            'usb=*',
+            'autoplay=*',
+            'encrypted-media=*',
+            'picture-in-picture=*',
+            'display-capture=*'
+        ].join(', '));
+
+        // 设置iframe友好的CSP策略
+        const cspHeader = [
+            `default-src 'self' https: wss: ws: data: blob:`,
+            `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.shopify.com https://*.shopifycloud.com https: blob: data:`,
+            `style-src 'self' 'unsafe-inline' https: data: https://cdn.shopify.com https://*.shopifycloud.com`,
+            `img-src 'self' data: https: blob: https://*.feedonomics.com https://*.shopifycloud.com`,
+            `connect-src 'self' https: wss: ws: https://*.shopifycloud.com https://*.shopify.com wss://${tunnelDomain}:* wss://${tunnelDomain} ws://localhost:* wss://localhost:* blob: data:`,
+            `font-src 'self' https: data: https://*.shopifycloud.com`,
+            `object-src 'none'`,
+            `media-src 'self' https: data: blob:`,
+            `frame-src 'self' https://*.myshopify.com https://admin.shopify.com https: blob: data:`,
+            `frame-ancestors https://${shopDomain} https://admin.shopify.com https://*.shopify.com https://${tunnelDomain}`,
+            `form-action 'self' https: blob:`,
+            `base-uri 'self'`,
+            `worker-src 'self' blob: data:`,
+            `child-src 'self' https: blob: data:`
+        ].join('; ');
+
+        res.setHeader('Content-Security-Policy', cspHeader);
+
+        // 设置iframe相关的安全标头
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+        // 完全移除X-Frame-Options，让CSP frame-ancestors控制
+        res.removeHeader('X-Frame-Options');
+
+        // 设置跨域嵌入必要的标头
+        res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
+        res.setHeader('Cross-Origin-Opener-Policy', 'unsafe-none');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
+        // 添加支持iframe脚本执行的头部
+        res.setHeader('Feature-Policy', 'geolocation *; camera *; microphone *; payment *; usb *; autoplay *; encrypted-media *; picture-in-picture *; display-capture *; script-src *');
+
+    } else if (shop) {
+        // 非嵌入式但有shop参数
+        const sanitizedShop = shop.replace(/[^a-zA-Z0-9\-\.]/g, '');
+        const shopDomain = sanitizedShop.includes('.myshopify.com') ? sanitizedShop : `${sanitizedShop}.myshopify.com`;
+
         const cspHeader = [
             `default-src 'self' https: wss: ws:`,
             `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.shopify.com https://*.shopifycloud.com https: blob:`,
@@ -207,12 +284,7 @@ app.use((req, res, next) => {
         ].join('; ');
 
         res.setHeader('Content-Security-Policy', cspHeader);
-
-        // 完全移除X-Frame-Options，让CSP frame-ancestors控制
         res.removeHeader('X-Frame-Options');
-
-        // 移除CSP设置日志，只在错误时打印
-        // logger.info(`Set CSP frame-ancestors for shop: ${shopDomain}, tunnel: ${tunnelDomain}`);
     } else {
         // 如果没有shop参数，设置宽松的策略用于开发
         const cspHeader = [
@@ -290,19 +362,46 @@ app.use(cors({
 app.use((req, res, next) => {
     // 监听连接错误
     req.on('error', (err) => {
-        // 只在非HTTP2协议错误时记录
-        if (!err.message.includes('HTTP2') && !err.message.includes('PROTOCOL_ERROR')) {
-            console.error('Request error:', err);
+        // 过滤常见的网络错误和超时错误
+        const isCommonNetworkError = err.message.includes('HTTP2') ||
+            err.message.includes('PROTOCOL_ERROR') ||
+            err.message.includes('ERR_HTTP_REQUEST_TIMEOUT') ||
+            err.message.includes('ECONNRESET') ||
+            err.message.includes('EPIPE');
+
+        if (!isCommonNetworkError) {
+            if (shouldLogError(err.message, `request:${req.method}:${req.url}`)) {
+                logger.warn('Request error:', {
+                    message: err.message,
+                    code: (err as any).code,
+                    url: req.url,
+                    method: req.method
+                });
+            }
         }
+
         if (!res.headersSent) {
             res.status(400).json({ error: 'Request error', message: err.message });
         }
     });
 
     res.on('error', (err) => {
-        // 只在非HTTP2协议错误时记录
-        if (!err.message.includes('HTTP2') && !err.message.includes('PROTOCOL_ERROR')) {
-            console.error('Response error:', err);
+        // 过滤常见的网络错误和超时错误
+        const isCommonNetworkError = err.message.includes('HTTP2') ||
+            err.message.includes('PROTOCOL_ERROR') ||
+            err.message.includes('ERR_HTTP_REQUEST_TIMEOUT') ||
+            err.message.includes('ECONNRESET') ||
+            err.message.includes('EPIPE');
+
+        if (!isCommonNetworkError) {
+            if (shouldLogError(err.message, `response:${req.method}:${req.url}`)) {
+                logger.warn('Response error:', {
+                    message: err.message,
+                    code: (err as any).code,
+                    url: req.url,
+                    method: req.method
+                });
+            }
         }
     });
 
@@ -312,7 +411,11 @@ app.use((req, res, next) => {
             // 在Cloudflare环境下，连接提前关闭是正常的
             const isCloudflareEnv = req.get('CF-Ray') || req.hostname.includes('.trycloudflare.com') || req.hostname.includes('.amoze.cc');
             if (!isCloudflareEnv) {
-                console.log('Connection closed prematurely');
+                logger.debug('Connection closed prematurely for', {
+                    url: req.url,
+                    method: req.method,
+                    userAgent: req.get('User-Agent')
+                });
             }
         }
     });
@@ -325,23 +428,28 @@ app.use(express.urlencoded({ extended: true }));
 
 // 添加请求超时处理，防止Cloudflare 524错误
 app.use((req, res, next) => {
-    // 设置服务器响应超时为90秒（Cloudflare默认100秒）
-    req.setTimeout(90000, () => {
-        logger.warn(`Request timeout for ${req.method} ${req.path}`);
+    // 设置更合理的超时时间
+    const timeoutMs = 30000; // 30秒超时，适合大多数API操作
+
+    const requestTimer = setTimeout(() => {
         if (!res.headersSent) {
+            logger.warn(`Request timeout after ${timeoutMs}ms for ${req.method} ${req.path}`);
             res.status(408).json({
                 success: false,
-                error: 'Request timeout'
+                error: 'Request timeout',
+                message: 'Request took too long to process'
             });
         }
-    });
+    }, timeoutMs);
 
-    res.setTimeout(90000, () => {
-        logger.warn(`Response timeout for ${req.method} ${req.path}`);
-        if (!res.headersSent) {
-            res.status(408).end();
-        }
-    });
+    // 清理定时器
+    const cleanup = () => {
+        clearTimeout(requestTimer);
+    };
+
+    res.on('finish', cleanup);
+    res.on('close', cleanup);
+    res.on('error', cleanup);
 
     next();
 });
@@ -631,26 +739,54 @@ async function startServer() {
             }
         });
 
-        // 配置服务器以处理 Cloudflare 隧道
-        server.keepAliveTimeout = 30000; // 30秒
-        server.headersTimeout = 35000; // 35秒
+        // 配置服务器以处理网络问题和超时
+        server.keepAliveTimeout = 20000; // 20秒，减少保持连接时间
+        server.headersTimeout = 25000; // 25秒，略大于keepAliveTimeout
+        server.requestTimeout = 30000; // 30秒请求超时
+        server.timeout = 35000; // 35秒总超时
 
         // 禁用 HTTP/2 服务器推送（可能导致 QUIC 问题）
         server.on('stream', (stream: any, headers: any) => {
             stream.on('error', (err: Error) => {
-                console.error('Stream error:', err);
+                if (!err.message.includes('RST_STREAM') && !err.message.includes('PROTOCOL_ERROR')) {
+                    logger.warn('Stream error:', err.message);
+                }
             });
         });
 
         // 处理服务器错误
         server.on('error', (err: Error) => {
-            console.error('Server error:', err);
+            // 过滤常见的网络错误
+            if (!err.message.includes('ECONNRESET') &&
+                !err.message.includes('EPIPE') &&
+                !err.message.includes('ERR_HTTP_REQUEST_TIMEOUT')) {
+                logger.error('Server error:', err);
+            }
         });
 
         server.on('clientError', (err: Error, socket: any) => {
-            console.error('Client error:', err);
+            // 过滤常见的客户端超时错误
+            const isCommonClientError = err.message.includes('ERR_HTTP_REQUEST_TIMEOUT') ||
+                err.message.includes('ECONNRESET') ||
+                err.message.includes('EPIPE') ||
+                err.message.includes('ENOTFOUND') ||
+                err.message.includes('ETIMEDOUT');
+
+            if (!isCommonClientError) {
+                if (shouldLogError(err.message, 'client')) {
+                    logger.warn('Client error:', {
+                        message: err.message,
+                        code: (err as any).code
+                    });
+                }
+            }
+
             if (!socket.destroyed) {
-                socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+                try {
+                    socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+                } catch (socketError) {
+                    // 忽略套接字错误
+                }
             }
         });
     } catch (error) {

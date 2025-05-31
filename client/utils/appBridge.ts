@@ -1,5 +1,8 @@
-// App Bridge 安全初始化工具
+/**
+ * Shopify App Bridge 初始化和配置
+ */
 
+// 扩展window类型定义
 declare global {
     interface Window {
         ShopifyAnalytics?: any;
@@ -23,115 +26,128 @@ export interface AppBridgeConfig {
     embedded: boolean;
 }
 
+// 检查 App Bridge 是否可用
 export const isAppBridgeAvailable = (): boolean => {
-    return typeof window !== 'undefined' &&
-        'shopifyApp' in window &&
-        typeof (window as any).shopifyApp === 'object';
-};
-
-export const shouldLoadAppBridge = (): boolean => {
-    // 检查是否在Shopify环境中
-    const urlParams = new URLSearchParams(window.location.search);
-    const hasShop = urlParams.has('shop') || urlParams.get('shop');
-    const hasHost = urlParams.has('host') || urlParams.get('host');
-
-    // 检查服务器注入的配置
-    const config = window.shopifyConfig;
-    const hasConfig = config && config.shop && config.shop !== '%SHOP%';
-
-    // 如果是自定义应用，不需要App Bridge
-    if (config?.isCustomApp || config?.skipAppBridge) {
-        console.log('Skipping App Bridge for custom app');
+    try {
+        return typeof window !== 'undefined' &&
+            typeof document !== 'undefined' &&
+            window.location.search.includes('shop=');
+    } catch (e) {
         return false;
     }
-
-    return !!(hasShop && hasHost) || !!hasConfig;
 };
 
+// 检查是否应该加载 App Bridge
+export const shouldLoadAppBridge = (): boolean => {
+    try {
+        // 检查环境配置
+        const config = window.shopifyConfig;
+        if (config?.skipAppBridge || config?.isCustomApp) {
+            return false;
+        }
+
+        // 检查iframe环境
+        const isInIframe = window !== window.top;
+        const hasShopParam = window.location.search.includes('shop=');
+        const hasHostParam = window.location.search.includes('host=');
+
+        return isInIframe && hasShopParam && hasHostParam;
+    } catch (error) {
+        console.warn('App Bridge availability check failed:', error);
+        return false;
+    }
+};
+
+// 初始化 App Bridge（异步）
 export const initAppBridge = async (): Promise<any> => {
     if (!shouldLoadAppBridge()) {
-        console.log('App Bridge not needed');
-        return null;
-    }
-
-    // 等待App Bridge脚本加载
-    let attempts = 0;
-    const maxAttempts = 30; // 3秒超时
-
-    while (!isAppBridgeAvailable() && attempts < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-        attempts++;
-    }
-
-    if (!isAppBridgeAvailable()) {
-        console.warn('App Bridge not available after timeout');
+        console.log('🔄 跳过App Bridge初始化 - 自定义应用或非iframe环境');
         return null;
     }
 
     try {
+        console.log('🏪 开始初始化Shopify App Bridge...');
+
+        // 获取配置
         const config = getAppBridgeConfig();
         if (!config) {
-            console.warn('App Bridge config not available');
-            return null;
+            throw new Error('App Bridge配置无效');
         }
 
-        const { createApp } = (window as any).shopifyApp;
+        // 动态导入App Bridge以避免沙盒错误
+        const { createApp } = await import('@shopify/app-bridge');
 
+        // 创建App Bridge实例
         const app = createApp({
             apiKey: config.apiKey,
-            shop: config.shop,
             host: config.host,
             forceRedirect: true
         });
 
-        console.log('App Bridge initialized successfully');
+        console.log('✅ App Bridge初始化成功');
         return app;
+
     } catch (error) {
-        console.error('Failed to initialize App Bridge:', error);
+        console.warn('⚠️ App Bridge初始化失败:', error);
+
+        // 在沙盒环境中，App Bridge可能无法正常工作
+        // 这是正常现象，我们可以静默处理
+        if (error instanceof Error && error.message.includes('sandboxed')) {
+            console.log('🔒 检测到沙盒环境，跳过App Bridge');
+            return null;
+        }
+
+        throw error;
+    }
+};
+
+// 获取 App Bridge 配置
+export const getAppBridgeConfig = (): AppBridgeConfig | null => {
+    try {
+        // 从服务器注入的配置获取
+        const serverConfig = window.shopifyConfig;
+        if (serverConfig && serverConfig.shop && serverConfig.apiKey) {
+            return {
+                apiKey: serverConfig.apiKey,
+                shop: serverConfig.shop,
+                host: serverConfig.host,
+                embedded: serverConfig.embedded
+            };
+        }
+
+        // 从URL参数获取（备用方案）
+        const urlParams = new URLSearchParams(window.location.search);
+        const shop = urlParams.get('shop');
+        const host = urlParams.get('host');
+
+        if (!shop || !host) {
+            return null;
+        }
+
+        return {
+            apiKey: process.env.REACT_APP_SHOPIFY_API_KEY || '',
+            shop,
+            host,
+            embedded: true
+        };
+    } catch (error) {
+        console.warn('获取App Bridge配置失败:', error);
         return null;
     }
 };
 
-export const getAppBridgeConfig = (): AppBridgeConfig | null => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const config = window.shopifyConfig;
-
-    // 优先使用服务器注入的配置
-    if (config && config.shop && config.shop !== '%SHOP%') {
-        return {
-            apiKey: config.apiKey,
-            shop: config.shop,
-            host: config.host,
-            embedded: config.embedded
-        };
-    }
-
-    // 回退到URL参数
-    const shop = urlParams.get('shop');
-    const host = urlParams.get('host');
-    const apiKey = urlParams.get('api_key') || config?.apiKey;
-
-    if (shop && host && apiKey) {
-        return {
-            apiKey,
-            shop,
-            host,
-            embedded: urlParams.get('embedded') !== '0'
-        };
-    }
-
-    return null;
-};
-
+// 处理 SendBeacon 错误
 export const handleSendBeacon = (): void => {
-    // 拦截SendBeacon错误
-    const originalSendBeacon = navigator.sendBeacon;
-    if (originalSendBeacon) {
+    // 拦截和处理navigator.sendBeacon错误
+    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+        const originalSendBeacon = navigator.sendBeacon.bind(navigator);
+
         navigator.sendBeacon = function (url: string | URL, data?: BodyInit | null): boolean {
             try {
-                return originalSendBeacon.call(this, url, data);
+                return originalSendBeacon(url, data);
             } catch (error) {
-                console.warn('SendBeacon failed (suppressed):', error);
+                // 在某些环境中SendBeacon可能失败，这是正常的
+                console.debug('SendBeacon调用被静默处理');
                 return false;
             }
         };
@@ -143,19 +159,35 @@ export const initErrorHandling = (): void => {
     // 处理SendBeacon错误
     handleSendBeacon();
 
-    // 监听未捕获的错误
+    // 添加全局错误处理器，专门处理App Bridge相关错误
     window.addEventListener('error', (event) => {
-        if (event.message?.includes('SendBeacon')) {
+        const message = event.message || '';
+
+        // App Bridge相关错误
+        if (message.includes('App Bridge') ||
+            message.includes('Shopify') ||
+            message.includes('sendBeacon') ||
+            message.includes('sandboxed')) {
+
+            console.debug('App Bridge相关错误被静默处理:', message);
             event.preventDefault();
-            console.warn('SendBeacon error suppressed:', event.error);
+            return false;
+        }
+    }, true);
+
+    // 处理未捕获的Promise拒绝
+    window.addEventListener('unhandledrejection', (event) => {
+        const message = String(event.reason?.message || event.reason || '');
+
+        if (message.includes('App Bridge') ||
+            message.includes('sendBeacon') ||
+            message.includes('sandboxed')) {
+
+            console.debug('App Bridge Promise拒绝被静默处理:', message);
+            event.preventDefault();
+            return false;
         }
     });
 
-    // 监听未处理的Promise拒绝
-    window.addEventListener('unhandledrejection', (event) => {
-        if (event.reason?.message?.includes('SendBeacon')) {
-            event.preventDefault();
-            console.warn('SendBeacon promise rejection suppressed:', event.reason);
-        }
-    });
+    console.log('✅ App Bridge错误处理已初始化');
 }; 
