@@ -68,6 +68,44 @@ router.get('/shopify/callback', async (req: Request, res: Response, next: NextFu
 
         logger.info(`OAuth callback successful for shop: ${session.shop}`);
 
+        // 在后台异步注册webhooks（不影响用户重定向）
+        // 使用setTimeout确保在当前请求完成后执行
+        setTimeout(async () => {
+            try {
+                const { WebhookService } = await import('../services/WebhookService');
+                const webhookService = new WebhookService();
+
+                logger.info(`Starting webhook registration for newly installed app: ${session.shop}`);
+                const webhookResults = await webhookService.registerWebhooks(session);
+
+                const successCount = webhookResults.filter(r => r.success).length;
+                const failureCount = webhookResults.filter(r => !r.success).length;
+
+                if (failureCount === 0) {
+                    logger.info(`All webhooks registered successfully for shop: ${session.shop}`, {
+                        shop: session.shop,
+                        successful: successCount,
+                        total: webhookResults.length
+                    });
+                } else {
+                    logger.warn(`Some webhooks failed to register for shop: ${session.shop}`, {
+                        shop: session.shop,
+                        successful: successCount,
+                        failed: failureCount,
+                        errors: webhookResults.filter(r => !r.success).map(r => ({
+                            topic: r.topic,
+                            message: r.message
+                        }))
+                    });
+                }
+            } catch (webhookError) {
+                logger.error(`Failed to register webhooks for shop: ${session.shop}`, {
+                    shop: session.shop,
+                    error: webhookError instanceof Error ? webhookError.message : webhookError
+                });
+            }
+        }, 100); // 100ms延迟，确保响应已发送
+
         // 重定向到应用主页面
         const host = req.query.host;
         const redirectUrl = host

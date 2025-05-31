@@ -804,4 +804,398 @@ router.post('/bulk', async (req: Request, res: Response, next: NextFunction) => 
     }
 });
 
+/**
+ * 诊断产品图片问题
+ */
+router.post('/:id/diagnose-image', verifyShopifySession, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id } = req.params;
+
+        logger.info(`Diagnosing image issues for product: ${id}`);
+
+        const product = await prisma.product.findUnique({
+            where: { id },
+            include: { brand: true }
+        });
+
+        if (!product) {
+            res.status(404).json({
+                success: false,
+                error: 'Product not found'
+            });
+            return;
+        }
+
+        const diagnostics = {
+            productId: product.id,
+            productTitle: product.title,
+            imageUrl: product.imageUrl,
+            shopifyProductId: product.shopifyProductId,
+            importStatus: product.importStatus,
+            checks: [] as Array<{ check: string; status: 'pass' | 'fail' | 'warning'; message: string; details?: any }>
+        };
+
+        // 检查1: 是否有图片URL
+        if (!product.imageUrl) {
+            diagnostics.checks.push({
+                check: 'Image URL Exists',
+                status: 'fail',
+                message: 'Product has no image URL'
+            });
+        } else {
+            diagnostics.checks.push({
+                check: 'Image URL Exists',
+                status: 'pass',
+                message: `Image URL: ${product.imageUrl}`
+            });
+
+            // 检查2: URL格式验证
+            const urlPattern = /^https?:\/\/.+/i;
+            if (!urlPattern.test(product.imageUrl)) {
+                diagnostics.checks.push({
+                    check: 'URL Format',
+                    status: 'fail',
+                    message: 'Invalid URL format'
+                });
+            } else {
+                diagnostics.checks.push({
+                    check: 'URL Format',
+                    status: 'pass',
+                    message: 'URL format is valid'
+                });
+
+                // 检查3: 图片可访问性
+                try {
+                    const startTime = Date.now();
+                    const response = await fetch(product.imageUrl, {
+                        method: 'HEAD',
+                        signal: AbortSignal.timeout(10000),
+                        headers: {
+                            'User-Agent': 'Shopify-Product-Importer/1.0'
+                        }
+                    });
+                    const responseTime = Date.now() - startTime;
+
+                    if (response.ok) {
+                        const contentType = response.headers.get('content-type');
+                        const contentLength = response.headers.get('content-length');
+
+                        diagnostics.checks.push({
+                            check: 'Image Accessibility',
+                            status: 'pass',
+                            message: `Image is accessible (${response.status})`,
+                            details: {
+                                responseTime: `${responseTime}ms`,
+                                contentType,
+                                contentLength: contentLength ? `${contentLength} bytes` : 'Unknown'
+                            }
+                        });
+
+                        // 检查4: 内容类型
+                        if (contentType && contentType.startsWith('image/')) {
+                            diagnostics.checks.push({
+                                check: 'Content Type',
+                                status: 'pass',
+                                message: `Valid image content type: ${contentType}`
+                            });
+                        } else {
+                            diagnostics.checks.push({
+                                check: 'Content Type',
+                                status: 'warning',
+                                message: `Non-standard content type: ${contentType || 'None'}`
+                            });
+                        }
+
+                        // 检查5: 文件大小
+                        if (contentLength) {
+                            const sizeBytes = parseInt(contentLength);
+                            if (sizeBytes < 1000) {
+                                diagnostics.checks.push({
+                                    check: 'File Size',
+                                    status: 'warning',
+                                    message: `Very small file size: ${sizeBytes} bytes`
+                                });
+                            } else if (sizeBytes > 10 * 1024 * 1024) {
+                                diagnostics.checks.push({
+                                    check: 'File Size',
+                                    status: 'warning',
+                                    message: `Large file size: ${Math.round(sizeBytes / 1024 / 1024)}MB`
+                                });
+                            } else {
+                                diagnostics.checks.push({
+                                    check: 'File Size',
+                                    status: 'pass',
+                                    message: `Reasonable file size: ${Math.round(sizeBytes / 1024)}KB`
+                                });
+                            }
+                        }
+
+                    } else {
+                        diagnostics.checks.push({
+                            check: 'Image Accessibility',
+                            status: 'fail',
+                            message: `Image not accessible (${response.status})`
+                        });
+
+                        // 如果直接访问失败，测试代理访问
+                        try {
+                            const appUrl = process.env.SHOPIFY_APP_URL || process.env.APPLICATION_URL || 'https://shopifydev.amoze.cc';
+                            const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(product.imageUrl)}`;
+
+                            const proxyResponse = await fetch(proxyUrl, {
+                                method: 'HEAD',
+                                signal: AbortSignal.timeout(10000)
+                            });
+
+                            if (proxyResponse.ok) {
+                                diagnostics.checks.push({
+                                    check: 'Proxy Image Access',
+                                    status: 'pass',
+                                    message: `Image accessible via proxy (${proxyResponse.status})`,
+                                    details: {
+                                        proxyUrl: proxyUrl,
+                                        contentType: proxyResponse.headers.get('content-type') || 'Unknown'
+                                    }
+                                });
+                            } else {
+                                diagnostics.checks.push({
+                                    check: 'Proxy Image Access',
+                                    status: 'fail',
+                                    message: `Proxy access also failed (${proxyResponse.status})`
+                                });
+                            }
+                        } catch (proxyError) {
+                            diagnostics.checks.push({
+                                check: 'Proxy Image Access',
+                                status: 'warning',
+                                message: `Proxy test failed: ${proxyError instanceof Error ? proxyError.message : 'Unknown error'}`
+                            });
+                        }
+                    }
+                } catch (error) {
+                    diagnostics.checks.push({
+                        check: 'Image Accessibility',
+                        status: 'fail',
+                        message: `Network error: ${error instanceof Error ? error.message : 'Unknown error'}`
+                    });
+                }
+            }
+        }
+
+        // 检查6: Shopify产品状态
+        if (product.shopifyProductId) {
+            diagnostics.checks.push({
+                check: 'Shopify Product',
+                status: 'pass',
+                message: `Product exists in Shopify (ID: ${product.shopifyProductId})`
+            });
+
+            // 检查Shopify中的图片状态
+            const session = (req as any).shopifySession;
+            try {
+                const { ShopifyService } = await import('../services/ShopifyService');
+                const service = new ShopifyService();
+                const result = await service.checkProductExists(session, product.shopifyProductId);
+
+                if (result.exists && result.product) {
+                    const shopifyImages = result.product.images || [];
+                    if (shopifyImages.length > 0) {
+                        diagnostics.checks.push({
+                            check: 'Shopify Product Images',
+                            status: 'pass',
+                            message: `${shopifyImages.length} image(s) in Shopify`,
+                            details: {
+                                images: shopifyImages.map((img: any) => ({
+                                    id: img.id,
+                                    src: img.src,
+                                    alt: img.alt
+                                }))
+                            }
+                        });
+                    } else {
+                        diagnostics.checks.push({
+                            check: 'Shopify Product Images',
+                            status: 'fail',
+                            message: 'No images found in Shopify product'
+                        });
+                    }
+                } else {
+                    diagnostics.checks.push({
+                        check: 'Shopify Product Images',
+                        status: 'fail',
+                        message: 'Shopify product not found'
+                    });
+                }
+            } catch (error) {
+                diagnostics.checks.push({
+                    check: 'Shopify Product Images',
+                    status: 'warning',
+                    message: `Error checking Shopify product: ${error instanceof Error ? error.message : 'Unknown error'}`
+                });
+            }
+        } else {
+            diagnostics.checks.push({
+                check: 'Shopify Product',
+                status: 'warning',
+                message: 'Product not imported to Shopify yet'
+            });
+        }
+
+        res.json({
+            success: true,
+            data: diagnostics
+        });
+
+    } catch (error) {
+        logger.error('Error diagnosing product image:', error);
+        next(error);
+    }
+});
+
+/**
+ * 修复产品图片问题
+ */
+router.post('/:id/fix-image', verifyShopifySession, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id } = req.params;
+        const { forceUpdate = false } = req.body;
+
+        logger.info(`Attempting to fix image for product: ${id}`);
+
+        const product = await prisma.product.findUnique({
+            where: { id },
+            include: { brand: true }
+        });
+
+        if (!product) {
+            res.status(404).json({
+                success: false,
+                error: 'Product not found'
+            });
+            return;
+        }
+
+        if (!product.imageUrl) {
+            res.status(400).json({
+                success: false,
+                error: 'Product has no image URL to fix'
+            });
+            return;
+        }
+
+        const session = (req as any).shopifySession;
+        const results = {
+            productId: product.id,
+            imageUrl: product.imageUrl,
+            shopifyProductId: product.shopifyProductId,
+            actions: [] as Array<{ action: string; status: 'success' | 'failed'; message: string }>
+        };
+
+        // 如果产品已导入到Shopify，尝试修复Shopify中的图片
+        if (product.shopifyProductId) {
+            try {
+                const { ShopifyService } = await import('../services/ShopifyService');
+                const shopifyService = new ShopifyService();
+
+                // 检查产品是否存在
+                const productCheck = await shopifyService.checkProductExists(session, product.shopifyProductId);
+
+                if (productCheck.exists) {
+                    const shopifyProduct = productCheck.product;
+                    const hasImages = shopifyProduct.images && shopifyProduct.images.length > 0;
+
+                    if (!hasImages || forceUpdate) {
+                        // 尝试添加原始图片
+                        let imageAdded = await (shopifyService as any).addImageToProduct(
+                            session,
+                            product.shopifyProductId,
+                            product.imageUrl,
+                            product.title
+                        );
+
+                        if (imageAdded) {
+                            results.actions.push({
+                                action: 'Add Image to Shopify Product',
+                                status: 'success',
+                                message: 'Image successfully added to Shopify product'
+                            });
+                        } else {
+                            // 如果原始图片失败，尝试使用代理URL
+                            try {
+                                const appUrl = process.env.SHOPIFY_APP_URL || process.env.APPLICATION_URL || 'https://shopifydev.amoze.cc';
+                                const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(product.imageUrl)}`;
+
+                                logger.info(`Attempting to add image via proxy: ${proxyUrl}`);
+
+                                imageAdded = await (shopifyService as any).addImageToProduct(
+                                    session,
+                                    product.shopifyProductId,
+                                    proxyUrl,
+                                    product.title
+                                );
+
+                                if (imageAdded) {
+                                    results.actions.push({
+                                        action: 'Add Image via Proxy',
+                                        status: 'success',
+                                        message: 'Image successfully added using proxy service'
+                                    });
+                                } else {
+                                    results.actions.push({
+                                        action: 'Add Image to Shopify Product',
+                                        status: 'failed',
+                                        message: 'Failed to add image even with proxy service'
+                                    });
+                                }
+                            } catch (proxyError) {
+                                results.actions.push({
+                                    action: 'Add Image to Shopify Product',
+                                    status: 'failed',
+                                    message: 'Failed to add image to Shopify product (original and proxy failed)'
+                                });
+                            }
+                        }
+                    } else {
+                        results.actions.push({
+                            action: 'Check Shopify Images',
+                            status: 'success',
+                            message: `Product already has ${shopifyProduct.images.length} image(s) in Shopify`
+                        });
+                    }
+                } else {
+                    results.actions.push({
+                        action: 'Check Shopify Product',
+                        status: 'failed',
+                        message: 'Shopify product not found'
+                    });
+                }
+            } catch (error) {
+                results.actions.push({
+                    action: 'Fix Shopify Image',
+                    status: 'failed',
+                    message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+                });
+            }
+        } else {
+            results.actions.push({
+                action: 'Check Import Status',
+                status: 'failed',
+                message: 'Product not imported to Shopify yet. Import the product first.'
+            });
+        }
+
+        const hasSuccess = results.actions.some(action => action.status === 'success');
+
+        res.json({
+            success: hasSuccess,
+            data: results,
+            message: hasSuccess ? 'Image fix operations completed' : 'All fix operations failed'
+        });
+
+    } catch (error) {
+        logger.error('Error fixing product image:', error);
+        next(error);
+    }
+});
+
 export default router; 

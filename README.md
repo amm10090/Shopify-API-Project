@@ -11,6 +11,7 @@
 - **实时同步**: 支持产品库存和价格的实时更新
 - **品牌管理**: 集中管理导入的品牌和产品
 - **仪表板**: 直观的数据统计和导入进度监控
+- **🔗 Webhook集成**: 自动监听Shopify商品删除事件，实时同步商品状态
 
 ## 🛠️ 技术栈
 
@@ -163,6 +164,60 @@ SHOPIFY_APP_URL=https://your-current-tunnel.trycloudflare.com
 3. **浏览器开发者工具**: 查看Console和Network标签中的错误信息
 4. **测试嵌入**: 直接访问Shopify Admin中的应用页面
 
+## 🔗 Webhook配置
+
+### 概述
+应用集成了Shopify webhooks来实时监听商品删除事件，当在Shopify中删除了导入的商品后，会自动更新本地数据库中的商品状态为"未导入"。
+
+### 自动配置
+应用会在OAuth认证成功后自动注册必需的webhooks：
+
+- **products/delete**: 监听商品删除事件
+- **products/update**: 监听商品更新事件  
+- **app/uninstalled**: 监听应用卸载事件
+
+### 通过设置页面管理
+在应用的"设置"页面中，您可以：
+
+1. **查看Webhook状态**: 实时显示webhook配置状态
+2. **验证配置**: 检查所有webhook是否正确注册
+3. **修复配置**: 自动修复缺失或错误的webhook
+4. **重新注册**: 手动重新注册所有webhooks
+5. **管理详情**: 查看每个webhook的详细信息
+
+### 使用说明
+
+#### 1. 自动注册（推荐）
+- 应用安装后会自动注册所有必需的webhooks
+- 在设置页面可以验证和监控状态
+
+#### 2. 手动管理
+如果需要手动操作：
+```bash
+# 注册webhooks
+POST /api/webhook-management/register
+
+# 验证配置
+GET /api/webhook-management/validate
+
+# 修复配置
+POST /api/webhook-management/repair
+```
+
+#### 3. 故障排除
+如果webhook未正常工作：
+1. 在设置页面检查webhook状态
+2. 点击"验证配置"查看详细问题
+3. 使用"修复配置"自动解决问题
+4. 必要时重新注册webhook
+
+### 安全特性
+- **HMAC-SHA256签名验证**: 确保webhook来源可信
+- **重复事件检测**: 防止重复处理同一事件
+- **时间戳验证**: 拒绝过期的webhook请求
+
+详细配置指南请查看：[WEBHOOK_CONFIGURATION_GUIDE.md](./WEBHOOK_CONFIGURATION_GUIDE.md)
+
 ## 🚨 常见问题排查
 
 ### API弃用警告解决方案
@@ -172,6 +227,7 @@ PM2日志中出现大量 `[shopify-api/WARNING] API Deprecation Notice` 警告�
 
 ```
 [shopify-api/WARNING] API Deprecation Notice: {"message":"https://shopify.dev/api/admin-rest/latest/resources/product","path":"products"}
+[shopify-api/WARNING] API Deprecation Notice: {"message":"https://shopify.dev/api/admin-rest/latest/resources/product-image","path":"products/8763546370222/images"}
 ```
 
 #### 解决方法
@@ -191,10 +247,50 @@ PM2日志中出现大量 `[shopify-api/WARNING] API Deprecation Notice` 警告�
    pm2 restart shopify-api-project
    ```
 
-#### 技术细节
-- 应用智能选择API类型：`SHOPIFY_USE_GRAPHQL=true` 时优先使用GraphQL
-- GraphQL是Shopify推荐的新标准，性能更好且不会产生弃用警告
-- REST API方法仍保留作为fallback选项
+#### 🔧 技术实现亮点
+
+**智能API架构**
+- **双API支持**：GraphQL优先，REST API作为智能回退
+- **无缝切换**：单一环境变量控制，不影响现有功能
+- **自动故障恢复**：GraphQL失败时自动降级到REST API
+
+**遵循Shopify最佳实践**
+- ✅ **现代化Mutations**：使用`productCreate`和`productCreateMedia`
+- ✅ **统一输入结构**：标准的`ProductInput`和`CreateMediaInput`
+- ✅ **Global ID使用**：`gid://shopify/Product/123`格式
+- ✅ **完整错误处理**：`userErrors`和`mediaUserErrors`标准化处理
+- ✅ **变量和类型安全**：正确的GraphQL变量传递
+
+**图片处理优化**
+- **现代Media API**：使用`productCreateMedia`替代弃用的REST图片API
+- **智能URL编码**：自动修复空格等特殊字符问题
+- **多重回退策略**：URL编码→代理服务→格式转换
+- **分离创建流程**：产品创建与图片添加解耦，提高成功率
+
+**性能与兼容性**
+- **减少API调用**：GraphQL单次请求获取更多数据
+- **向后兼容**：现有REST功能完全保留
+- **渐进迁移**：可按需启用，风险最小化
+
+#### 📊 实际效果
+
+| 指标 | 之前（REST API） | 现在（GraphQL API） |
+|------|-----------------|---------------------|
+| 弃用警告 | ❌ 大量警告 | ✅ 零警告 |
+| API调用次数 | 多次分离调用 | 单次整合请求 |
+| 错误处理 | 基础HTTP状态码 | 结构化用户错误 |
+| 图片处理 | 弃用API | 现代Media API |
+| 兼容性 | 完全依赖REST | 智能回退机制 |
+
+#### 升级状态
+✅ **已完成的GraphQL迁移**：
+- ✅ 产品创建 (`productCreate` with full validation)
+- ✅ 产品更新 (`productUpdate` with selective fields)
+- ✅ 产品查询 (`products` query with SKU filters)
+- ✅ 图片管理 (`productCreateMedia` with Media API)
+- ✅ 智能回退机制（确保100%兼容性）
+
+这些改进确保应用完全符合Shopify现代化标准，同时保持与现有系统的完美兼容性。
 
 ### 其他常见问题
 
@@ -354,6 +450,165 @@ rawApiData Json? // 存储完整的API原始响应
 - [Shopify Polaris](https://polaris.shopify.com/)
 - [CJ Affiliate API](https://developers.cj.com/)
 - [Pepperjam API Documentation](https://help.pepperjam.com/api/)
+
+## 🖼️ 图片处理增强功能
+
+### 功能概述
+系统现在包含了强大的图片处理和诊断功能，解决产品导入时图片无法正确设置的问题。
+
+### 主要改进
+
+#### 1. 智能图片验证
+- **URL格式验证**: 支持标准图片扩展名和知名图片服务（Feedonomics、AWS S3、Cloudinary等）
+- **可访问性测试**: 自动测试图片URL是否可访问，支持自定义超时设置
+- **内容类型检查**: 验证返回的内容确实是图片格式
+- **文件大小检查**: 检测异常小或过大的图片文件
+
+#### 2. 灵活的导入策略
+- **渐进式处理**: 优先创建产品，图片失败时单独重试
+- **回退机制**: 如果初始导入图片失败，产品创建后会尝试单独添加图片
+- **错误容忍**: 图片问题不会阻止整个产品的创建过程
+- **智能重试**: 当Shopify拒绝图片URL时，自动尝试多种URL变体
+- **多User-Agent测试**: 使用不同的User-Agent来提高图片URL兼容性
+
+#### 3. 图片问题诊断工具
+
+##### API端点: `POST /api/products/:id/diagnose-image`
+全面诊断产品图片问题，包括：
+
+**检查项目**:
+- ✅ 图片URL是否存在
+- ✅ URL格式验证
+- ✅ 图片可访问性测试
+- ✅ 内容类型验证
+- ✅ 文件大小检查
+- ✅ Shopify产品状态
+- ✅ Shopify中的图片状态
+
+**使用示例**:
+```bash
+curl -X POST "https://your-app.trycloudflare.com/api/products/123/diagnose-image" \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
+```
+
+**响应格式**:
+```json
+{
+  "success": true,
+  "data": {
+    "productId": "123",
+    "productTitle": "示例产品",
+    "imageUrl": "https://example.com/image.jpg",
+    "shopifyProductId": "456",
+    "importStatus": "IMPORTED",
+    "checks": [
+      {
+        "check": "Image URL Exists",
+        "status": "pass",
+        "message": "Image URL: https://example.com/image.jpg"
+      },
+      {
+        "check": "URL Format",
+        "status": "pass", 
+        "message": "URL format is valid"
+      },
+      {
+        "check": "Image Accessibility",
+        "status": "pass",
+        "message": "Image is accessible (200)",
+        "details": {
+          "responseTime": "234ms",
+          "contentType": "image/jpeg",
+          "contentLength": "156789 bytes"
+        }
+      }
+    ]
+  }
+}
+```
+
+#### 4. 图片问题修复工具
+
+##### API端点: `POST /api/products/:id/fix-image`
+自动修复已导入产品的图片问题。
+
+**功能**:
+- 检查Shopify产品是否存在
+- 验证现有图片状态
+- 尝试添加缺失的图片
+- 支持强制更新模式
+
+**请求参数**:
+```json
+{
+  "forceUpdate": false  // 是否强制更新已有图片
+}
+```
+
+**使用场景**:
+1. **产品导入时图片失败**: 产品创建成功但图片未能添加
+2. **图片URL更新**: 源API中的图片URL发生变化
+3. **批量修复**: 对大量产品进行图片修复
+
+### 故障排除
+
+#### 常见图片问题及解决方案
+
+**1. 图片URL无法访问**
+- **原因**: 源网站防盗链、图片已删除、网络问题
+- **解决**: 使用诊断工具检查，考虑更换图片源
+
+**2. 图片格式不支持**
+- **原因**: 某些罕见格式或动态生成的图片
+- **解决**: 系统已支持主流格式和图片服务
+
+**3. 图片过大或过小**
+- **原因**: 文件尺寸异常
+- **解决**: 系统会警告但不阻止导入
+
+**4. Shopify图片添加失败**
+- **原因**: Shopify API限制、权限问题、图片服务器要求特殊User-Agent
+- **解决**: 使用修复工具重试，检查应用权限
+
+**5. Shopify拒绝图片URL（"不是有效的图片文件类型"）**
+- **原因**: 图片URL缺少明确的扩展名、服务器返回的Content-Type不正确、需要特殊的请求头、URL包含未编码的空格或特殊字符
+- **解决**: 
+  - 🔧 **智能URL编码**: 自动检测并修复URL中的空格、特殊字符等问题
+  - 系统自动尝试多种URL变体（添加时间戳、格式参数等）
+  - 使用多种User-Agent进行兼容性测试
+  - 产品仍会成功创建，只是暂时没有图片
+  - 可以后续手动添加或使用诊断工具排查
+
+**URL编码示例**:
+```
+原始URL: https://example.com/path/image name.jpg
+编码后:   https://example.com/path/image%20name.jpg
+```
+
+**6. CDN或防盗链限制**
+- **原因**: 图片服务器检查Referer或User-Agent
+- **解决**: 系统自动使用浏览器标准User-Agent重试
+
+**7. 特殊CDN域名限制（如Demandware/Salesforce Commerce）**
+- **原因**: Shopify可能对特定CDN域名有限制
+- **解决**: 自动使用图片代理服务重新托管图片
+- **代理端点**: `GET /api/shopify/image-proxy?url={原始图片URL}`
+- **特性**: 
+  - 自动尝试多种User-Agent
+  - 24小时缓存机制
+  - 流式传输优化
+  - 适用于Le Creuset等使用Demandware CDN的网站
+
+### 配置选项
+
+在环境变量中添加以下配置：
+
+```env
+# 图片处理配置
+IMAGE_ACCESS_TIMEOUT=5000        # 图片访问测试超时（毫秒）
+MAX_IMAGE_SIZE=10485760         # 最大图片大小（字节，默认10MB）
+MIN_IMAGE_SIZE=1000             # 最小图片大小（字节）
+```
 
 ## 🚨 故障排除
 

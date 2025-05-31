@@ -960,4 +960,107 @@ router.post('/sync-inventory', async (req: Request, res: Response, next: NextFun
     }
 });
 
+/**
+ * 图片代理端点 - 用于解决某些CDN图片无法被Shopify直接访问的问题
+ */
+router.get('/image-proxy', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { url } = req.query;
+
+        if (!url || typeof url !== 'string') {
+            res.status(400).json({
+                success: false,
+                error: 'Image URL is required'
+            });
+            return;
+        }
+
+        logger.info(`Proxying image request for: ${url}`);
+
+        // 使用多种User-Agent尝试获取图片
+        const userAgents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
+        ];
+
+        let fetchResponse: globalThis.Response | null = null;
+
+        for (const userAgent of userAgents) {
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'User-Agent': userAgent,
+                        'Accept': 'image/*,*/*;q=0.8',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache'
+                    },
+                    signal: AbortSignal.timeout(10000)
+                });
+
+                if (response.ok) {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.startsWith('image/')) {
+                        fetchResponse = response;
+                        logger.info(`Successfully fetched image with User-Agent: ${userAgent}`);
+                        break;
+                    }
+                }
+            } catch (error) {
+                logger.debug(`Failed to fetch with User-Agent ${userAgent}:`, error);
+                continue;
+            }
+        }
+
+        if (!fetchResponse) {
+            res.status(404).json({
+                success: false,
+                error: 'Unable to fetch image from source'
+            });
+            return;
+        }
+
+        // 设置响应头
+        const contentType = fetchResponse.headers.get('content-type') || 'image/jpeg';
+        const contentLength = fetchResponse.headers.get('content-length');
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=86400'); // 缓存24小时
+        res.setHeader('Access-Control-Allow-Origin', '*');
+
+        if (contentLength) {
+            res.setHeader('Content-Length', contentLength);
+        }
+
+        // 流式传输图片数据
+        if (fetchResponse.body) {
+            const reader = fetchResponse.body.getReader();
+
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    res.write(Buffer.from(value));
+                }
+                res.end();
+                logger.info(`Successfully proxied image: ${url}`);
+            } catch (streamError) {
+                logger.error('Error streaming image data:', streamError);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Error streaming image' });
+                }
+            }
+        } else {
+            res.status(500).json({ error: 'No image data received' });
+        }
+
+    } catch (error) {
+        logger.error('Error in image proxy:', error);
+        next(error);
+    }
+});
+
 export default router; 

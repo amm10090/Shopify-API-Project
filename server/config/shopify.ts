@@ -24,7 +24,9 @@ export function getShopifyApi() {
             'read_product_listings',
             'write_product_listings',
             'read_collections',
-            'write_collections'
+            'write_collections',
+            'read_webhooks',
+            'write_webhooks'
         ],
         hostName: process.env.SHOPIFY_HOST_NAME || 'localhost:3000',
         apiVersion: ApiVersion.July24,

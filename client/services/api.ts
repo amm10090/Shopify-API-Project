@@ -224,6 +224,39 @@ export const dashboardApi = {
     },
 };
 
+// Webhook管理API
+export const webhookApi = {
+    // 注册webhooks
+    registerWebhooks: async (): Promise<ApiResponse<any>> => {
+        return api.post('/webhook-management/register');
+    },
+
+    // 获取webhook列表
+    listWebhooks: async (): Promise<ApiResponse<any>> => {
+        return api.get('/webhook-management/list');
+    },
+
+    // 验证webhook配置
+    validateWebhooks: async (): Promise<ApiResponse<any>> => {
+        return api.get('/webhook-management/validate');
+    },
+
+    // 修复webhook配置
+    repairWebhooks: async (): Promise<ApiResponse<any>> => {
+        return api.post('/webhook-management/repair');
+    },
+
+    // 删除webhook
+    deleteWebhook: async (webhookId: string): Promise<ApiResponse<any>> => {
+        return api.delete(`/webhook-management/${webhookId}`);
+    },
+
+    // 获取webhook状态概览
+    getWebhookStatus: async (): Promise<ApiResponse<any>> => {
+        return api.get('/webhook-management/status');
+    },
+};
+
 // Settings相关API
 export const settingsApi = {
     // 获取当前设置

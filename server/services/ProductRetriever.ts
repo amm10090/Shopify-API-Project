@@ -36,13 +36,12 @@ export class ProductRetriever {
     }
 
     /**
-     * 验证图片URL是否有效
+     * 验证图片URL是否有效（改进版本 - 更宽松的验证）
      */
     private async isValidImageUrl(
         url: string,
-        timeout: number = 15000,
-        minSizeBytes: number = 1000,
-        maxRetries: number = 2
+        timeout: number = 8000,
+        maxRetries: number = 1
     ): Promise<boolean> {
         if (this.skipImageValidation) {
             return true;
@@ -53,89 +52,81 @@ export class ProductRetriever {
             return false;
         }
 
-        // feedonomics.com域名的图片已知有效但响应较慢，直接视为有效
-        if (url.includes('feedonomics.com')) {
-            logger.debug(`Skipping validation for feedonomics.com image: ${url}`);
+        // 已知的图片服务域名直接通过验证
+        const trustedDomains = [
+            'feedonomics.com',
+            'shopifycdn.com',
+            'shopify.com',
+            'amazonaws.com',
+            'cloudinary.com',
+            'imagekit.io',
+            'unsplash.com',
+            'pexels.com'
+        ];
+
+        if (trustedDomains.some(domain => url.includes(domain))) {
+            logger.debug(`Trusted domain detected, skipping validation: ${url}`);
             return true;
         }
 
+        // 基本URL格式检查 - 如果看起来像图片URL就认为有效
+        const imageExtensions = /\.(jpg|jpeg|png|gif|webp|svg|bmp|tiff)(\?.*)?$/i;
+        if (imageExtensions.test(url)) {
+            logger.debug(`URL has image extension, considering valid: ${url}`);
+            return true;
+        }
+
+        // 对于其他URL，进行轻量级验证
         for (let attempt = 0; attempt <= maxRetries; attempt++) {
             try {
                 const response = await axios.head(url, {
                     timeout,
                     headers: {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    },
+                    validateStatus: function (status) {
+                        // 接受更多的状态码作为有效响应
+                        return status >= 200 && status < 400;
                     }
                 });
 
-                if (response.status !== 200) {
-                    if (attempt < maxRetries) {
-                        logger.debug(`HEAD request returned ${response.status}, retrying...`);
-                        continue;
-                    }
-                    logger.warn(`Image URL returned non-200 status: ${url} (status: ${response.status})`);
-                    return false;
-                }
+                if (response.status >= 200 && response.status < 300) {
+                    const contentType = response.headers['content-type']?.toLowerCase() || '';
 
-                const contentType = response.headers['content-type']?.toLowerCase() || '';
-                const imageTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
+                    // 更宽松的内容类型检查
+                    if (contentType.startsWith('image/') ||
+                        contentType.includes('octet-stream') ||
+                        contentType === '' ||
+                        contentType.includes('binary')) {
 
-                if (!imageTypes.some(type => contentType.startsWith(type))) {
-                    if (attempt < maxRetries) {
-                        logger.debug(`Content-Type not image (${contentType}), trying GET request...`);
-                        try {
-                            const getResponse = await axios.get(url, {
-                                timeout,
-                                responseType: 'stream',
-                                headers: {
-                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                                }
-                            });
-
-                            if (getResponse.status === 200) {
-                                const getContentType = getResponse.headers['content-type']?.toLowerCase() || '';
-                                if (imageTypes.some(type => getContentType.startsWith(type))) {
-                                    return true;
-                                }
-                            }
-                            continue;
-                        } catch (innerError) {
-                            if (attempt < maxRetries) {
-                                continue;
-                            }
-                            logger.warn(`GET request failed: ${url}`, innerError);
-                            return false;
-                        }
-                    }
-
-                    if (attempt === maxRetries) {
-                        logger.warn(`URL is not an image type: ${url} (Content-Type: ${contentType})`);
-                        return false;
+                        logger.debug(`Image URL validated: ${url} (${contentType})`);
+                        return true;
+                    } else {
+                        logger.debug(`Non-image content type but may still be valid: ${url} (${contentType})`);
+                        // 即使不是图片内容类型，也可能是有效的图片URL（某些服务器配置问题）
+                        return true;
                     }
                 }
 
-                const contentLength = response.headers['content-length'];
-                if (contentLength && parseInt(contentLength) < minSizeBytes) {
-                    if (attempt < maxRetries) {
-                        logger.debug(`Image size too small (${contentLength} bytes), retrying...`);
-                        continue;
-                    }
-                    logger.warn(`Image URL content length too small: ${url} (size: ${contentLength} bytes)`);
-                    return false;
-                }
-
+                // 如果HEAD请求失败，不再重试，直接认为URL可能有效
+                // 某些服务器不支持HEAD请求
+                logger.debug(`HEAD request failed but URL may still be valid: ${url}`);
                 return true;
+
             } catch (error) {
                 if (attempt < maxRetries) {
-                    logger.debug(`Request error: ${error}, retrying...`);
+                    logger.debug(`Request error, retrying: ${error}`);
                     continue;
                 }
-                logger.warn(`Error validating image URL: ${url}`, error);
-                return false;
+
+                // 网络错误不代表图片无效，可能是临时性问题
+                logger.debug(`Network error during validation, but URL may still be valid: ${url}`);
+                return true;
             }
         }
 
-        return false;
+        // 默认情况下认为URL有效，让Shopify来决定是否能使用
+        return true;
     }
 
     /**

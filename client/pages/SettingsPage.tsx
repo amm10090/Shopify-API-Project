@@ -17,9 +17,13 @@ import {
     Badge,
     List,
     Spinner,
+    DataTable,
+    Modal,
+    TextContainer,
+    Icon,
 } from '@shopify/polaris';
-import { SaveIcon, ConnectIcon } from '@shopify/polaris-icons';
-import { settingsApi, shopifyApi } from '../services/api';
+import { SaveIcon, ConnectIcon, DeleteIcon, ReplayIcon, CheckCircleIcon, AlertCircleIcon } from '@shopify/polaris-icons';
+import { settingsApi, shopifyApi, webhookApi } from '../services/api';
 
 interface SettingsPageProps {
     showToast: (message: string) => void;
@@ -57,6 +61,34 @@ interface SystemStatus {
     lastCheck: string;
 }
 
+interface WebhookStatus {
+    shop: string;
+    totalWebhooks: number;
+    requiredWebhooks: number;
+    configuredRequired: number;
+    missingRequired: number;
+    extraWebhooks: number;
+    isValid: boolean;
+    lastChecked: string;
+    webhookDetails: Array<{
+        topic: string;
+        configured: boolean;
+        webhook: any | null;
+        required: boolean;
+    }>;
+    extraWebhookDetails: any[];
+    issues: string[];
+}
+
+interface Webhook {
+    id: string;
+    topic: string;
+    address: string;
+    format: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
 const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
     // 加载状态
     const [loading, setLoading] = useState(true);
@@ -86,6 +118,13 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
     // 通知设置
     const [emailNotifications, setEmailNotifications] = useState(true);
     const [notificationEmail, setNotificationEmail] = useState('');
+
+    // Webhook管理状态
+    const [webhookStatus, setWebhookStatus] = useState<WebhookStatus | null>(null);
+    const [webhooks, setWebhooks] = useState<Webhook[]>([]);
+    const [webhookLoading, setWebhookLoading] = useState(false);
+    const [webhookModalOpen, setWebhookModalOpen] = useState(false);
+    const [selectedWebhook, setSelectedWebhook] = useState<Webhook | null>(null);
 
     // 获取当前设置
     const fetchSettings = useCallback(async () => {
@@ -119,10 +158,35 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
         }
     }, [showToast]);
 
+    // Get webhook status
+    const fetchWebhookStatus = useCallback(async () => {
+        try {
+            setWebhookLoading(true);
+            const [statusResponse, listResponse] = await Promise.all([
+                webhookApi.getWebhookStatus(),
+                webhookApi.listWebhooks()
+            ]);
+
+            if (statusResponse.success) {
+                setWebhookStatus(statusResponse.data);
+            }
+
+            if (listResponse.success) {
+                setWebhooks(listResponse.data.webhooks || []);
+            }
+        } catch (error) {
+            console.error('Error fetching webhook status:', error);
+            showToast('Failed to load webhook status');
+        } finally {
+            setWebhookLoading(false);
+        }
+    }, [showToast]);
+
     // 组件挂载时获取设置
     useEffect(() => {
         fetchSettings();
-    }, [fetchSettings]);
+        fetchWebhookStatus();
+    }, [fetchSettings, fetchWebhookStatus]);
 
     // 测试 CJ API 连接
     const handleTestCjConnection = useCallback(async () => {
@@ -273,6 +337,167 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
         showToast,
         fetchSettings
     ]);
+
+    // Webhook Management Functions
+    const handleRegisterWebhooks = useCallback(async () => {
+        try {
+            setWebhookLoading(true);
+            const response = await webhookApi.registerWebhooks();
+
+            if (response.success) {
+                const { successful, failed } = response.data;
+                showToast(`Webhook registration completed: ${successful} successful, ${failed} failed`);
+                await fetchWebhookStatus();
+            } else {
+                showToast(`Webhook registration failed: ${response.error}`);
+            }
+        } catch (error) {
+            console.error('Error registering webhooks:', error);
+            showToast('Webhook registration failed');
+        } finally {
+            setWebhookLoading(false);
+        }
+    }, [showToast, fetchWebhookStatus]);
+
+    const handleValidateWebhooks = useCallback(async () => {
+        try {
+            setWebhookLoading(true);
+            const response = await webhookApi.validateWebhooks();
+
+            if (response.success) {
+                const { isValid, missingWebhooks, issues } = response.data;
+                if (isValid) {
+                    showToast('Webhook configuration validation passed');
+                } else {
+                    showToast(`Issues found: ${missingWebhooks.length} missing webhooks, ${issues.length} configuration problems`);
+                }
+                await fetchWebhookStatus();
+            } else {
+                showToast(`Webhook validation failed: ${response.error}`);
+            }
+        } catch (error) {
+            console.error('Error validating webhooks:', error);
+            showToast('Webhook validation failed');
+        } finally {
+            setWebhookLoading(false);
+        }
+    }, [showToast, fetchWebhookStatus]);
+
+    const handleRepairWebhooks = useCallback(async () => {
+        try {
+            setWebhookLoading(true);
+            const response = await webhookApi.repairWebhooks();
+
+            if (response.success) {
+                const { repaired, errors } = response.data;
+                if (errors.length === 0) {
+                    showToast(`Successfully repaired ${repaired.length} webhooks`);
+                } else {
+                    showToast(`Repaired ${repaired.length} webhooks, ${errors.length} failed`);
+                }
+                await fetchWebhookStatus();
+            } else {
+                showToast(`Webhook repair failed: ${response.error}`);
+            }
+        } catch (error) {
+            console.error('Error repairing webhooks:', error);
+            showToast('Webhook repair failed');
+        } finally {
+            setWebhookLoading(false);
+        }
+    }, [showToast, fetchWebhookStatus]);
+
+    const handleDeleteWebhook = useCallback(async (webhookId: string) => {
+        try {
+            setWebhookLoading(true);
+            const response = await webhookApi.deleteWebhook(webhookId);
+
+            if (response.success) {
+                showToast('Webhook deleted successfully');
+                await fetchWebhookStatus();
+                setWebhookModalOpen(false);
+                setSelectedWebhook(null);
+            } else {
+                showToast(`Webhook deletion failed: ${response.error}`);
+            }
+        } catch (error) {
+            console.error('Error deleting webhook:', error);
+            showToast('Webhook deletion failed');
+        } finally {
+            setWebhookLoading(false);
+        }
+    }, [showToast, fetchWebhookStatus]);
+
+    const handleRunDiagnostics = useCallback(async () => {
+        try {
+            setWebhookLoading(true);
+            const response = await fetch('/api/webhook-management/diagnose', {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                const { summary, checks } = result.data;
+                let message = `Diagnostics completed: ${summary.passed} passed, ${summary.failed} failed, ${summary.warnings} warnings`;
+
+                // Show detailed results
+                const failedChecks = checks.filter((c: any) => c.status === 'fail');
+                if (failedChecks.length > 0) {
+                    message += `\n\nFailed checks:\n${failedChecks.map((c: any) => `- ${c.check}: ${c.message}`).join('\n')}`;
+                }
+
+                showToast(message);
+                console.log('Webhook diagnostics results:', result.data);
+            } else {
+                showToast(`Diagnostics failed: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('Error running diagnostics:', error);
+            showToast('Diagnostics failed');
+        } finally {
+            setWebhookLoading(false);
+        }
+    }, [showToast]);
+
+    const handleForceSyncProducts = useCallback(async () => {
+        try {
+            setWebhookLoading(true);
+            const response = await fetch('/api/webhook-management/force-sync', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                const { checked, deleted, stillExists, errors } = result.data;
+                let message = `Force sync completed: ${checked} checked, ${deleted} marked as deleted, ${stillExists} still exist`;
+
+                if (errors.length > 0) {
+                    message += `, ${errors.length} errors`;
+                }
+
+                showToast(message);
+                console.log('Force sync results:', result.data);
+
+                // Refresh webhook status after sync
+                await fetchWebhookStatus();
+            } else {
+                showToast(`Force sync failed: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('Error in force sync:', error);
+            showToast('Force sync failed');
+        } finally {
+            setWebhookLoading(false);
+        }
+    }, [showToast, fetchWebhookStatus]);
 
     // 获取状态徽章
     const getStatusBadge = (status: string) => {
@@ -586,6 +811,193 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                     </Card>
                 </Layout.Section>
 
+                {/* Webhook Management */}
+                <Layout.Section>
+                    <Card>
+                        <BlockStack gap="400">
+                            <InlineStack align="space-between">
+                                <Text as="h2" variant="headingMd">Webhook Management</Text>
+                                <InlineStack gap="200">
+                                    <Button
+                                        variant="plain"
+                                        onClick={fetchWebhookStatus}
+                                        loading={webhookLoading}
+                                    >
+                                        Refresh Status
+                                    </Button>
+                                    <Button
+                                        variant="primary"
+                                        size="slim"
+                                        onClick={handleRegisterWebhooks}
+                                        loading={webhookLoading}
+                                    >
+                                        Register Webhooks
+                                    </Button>
+                                </InlineStack>
+                            </InlineStack>
+
+                            {webhookStatus && (
+                                <BlockStack gap="300">
+                                    <InlineStack align="space-between">
+                                        <Text as="span" variant="bodyMd">Webhook Status</Text>
+                                        <Badge tone={webhookStatus.isValid ? 'success' : 'critical'}>
+                                            {webhookStatus.isValid ? 'Configuration Valid' : 'Needs Repair'}
+                                        </Badge>
+                                    </InlineStack>
+
+                                    <InlineStack align="space-between">
+                                        <Text as="span" variant="bodyMd">Configured/Required</Text>
+                                        <Text as="span" variant="bodySm" tone="subdued">
+                                            {webhookStatus.configuredRequired}/{webhookStatus.requiredWebhooks}
+                                        </Text>
+                                    </InlineStack>
+
+                                    <InlineStack align="space-between">
+                                        <Text as="span" variant="bodyMd">Missing Webhooks</Text>
+                                        <Text as="span" variant="bodySm" tone={webhookStatus.missingRequired > 0 ? 'critical' : 'success'}>
+                                            {webhookStatus.missingRequired}
+                                        </Text>
+                                    </InlineStack>
+
+                                    <InlineStack align="space-between">
+                                        <Text as="span" variant="bodyMd">Extra Webhooks</Text>
+                                        <Text as="span" variant="bodySm" tone="subdued">
+                                            {webhookStatus.extraWebhooks}
+                                        </Text>
+                                    </InlineStack>
+
+                                    <InlineStack align="space-between">
+                                        <Text as="span" variant="bodyMd">Last Checked</Text>
+                                        <Text as="span" variant="bodySm" tone="subdued">
+                                            {new Date(webhookStatus.lastChecked).toLocaleString()}
+                                        </Text>
+                                    </InlineStack>
+
+                                    {!webhookStatus.isValid && (
+                                        <Banner tone="warning">
+                                            <BlockStack gap="200">
+                                                <Text as="p" variant="bodyMd">
+                                                    Webhook configuration issues detected. Please click the repair button to auto-fix.
+                                                </Text>
+                                                {webhookStatus.issues.length > 0 && (
+                                                    <List type="bullet">
+                                                        {webhookStatus.issues.map((issue, index) => (
+                                                            <List.Item key={index}>{issue}</List.Item>
+                                                        ))}
+                                                    </List>
+                                                )}
+                                            </BlockStack>
+                                        </Banner>
+                                    )}
+
+                                    <InlineStack gap="200">
+                                        <Button
+                                            onClick={handleValidateWebhooks}
+                                            loading={webhookLoading}
+                                            icon={CheckCircleIcon}
+                                        >
+                                            Validate Configuration
+                                        </Button>
+                                        {!webhookStatus.isValid && (
+                                            <Button
+                                                onClick={handleRepairWebhooks}
+                                                loading={webhookLoading}
+                                                tone="critical"
+                                                icon={ReplayIcon}
+                                            >
+                                                Repair Configuration
+                                            </Button>
+                                        )}
+                                        <Button
+                                            onClick={handleRunDiagnostics}
+                                            loading={webhookLoading}
+                                            variant="secondary"
+                                        >
+                                            Run Diagnostics
+                                        </Button>
+                                        <Button
+                                            onClick={handleForceSyncProducts}
+                                            loading={webhookLoading}
+                                            variant="secondary"
+                                        >
+                                            Force Sync Products
+                                        </Button>
+                                    </InlineStack>
+
+                                    {/* Webhook Details Table */}
+                                    {webhookStatus.webhookDetails && webhookStatus.webhookDetails.length > 0 && (
+                                        <BlockStack gap="200">
+                                            <Text as="h3" variant="headingMd">Required Webhooks</Text>
+                                            <DataTable
+                                                columnContentTypes={['text', 'text', 'text', 'text']}
+                                                headings={['Topic', 'Status', 'Address', 'Actions']}
+                                                rows={webhookStatus.webhookDetails.map((detail) => [
+                                                    detail.topic,
+                                                    detail.configured ? 'Configured' : 'Not Configured',
+                                                    detail.webhook?.address || '-',
+                                                    detail.configured && detail.webhook ? (
+                                                        <Button
+                                                            size="slim"
+                                                            onClick={() => {
+                                                                setSelectedWebhook(detail.webhook);
+                                                                setWebhookModalOpen(true);
+                                                            }}
+                                                        >
+                                                            View Details
+                                                        </Button>
+                                                    ) : (
+                                                        <Text as="span" variant="bodySm" tone="subdued">-</Text>
+                                                    )
+                                                ])}
+                                            />
+                                        </BlockStack>
+                                    )}
+
+                                    {/* Extra Webhooks */}
+                                    {webhookStatus.extraWebhookDetails && webhookStatus.extraWebhookDetails.length > 0 && (
+                                        <BlockStack gap="200">
+                                            <Text as="h3" variant="headingMd">Extra Webhooks</Text>
+                                            <DataTable
+                                                columnContentTypes={['text', 'text', 'text', 'text']}
+                                                headings={['Topic', 'Format', 'Address', 'Actions']}
+                                                rows={webhookStatus.extraWebhookDetails.map((webhook) => [
+                                                    webhook.topic,
+                                                    webhook.format,
+                                                    webhook.address,
+                                                    <Button
+                                                        size="slim"
+                                                        onClick={() => {
+                                                            setSelectedWebhook(webhook);
+                                                            setWebhookModalOpen(true);
+                                                        }}
+                                                    >
+                                                        Manage
+                                                    </Button>
+                                                ])}
+                                            />
+                                        </BlockStack>
+                                    )}
+                                </BlockStack>
+                            )}
+
+                            {!webhookStatus && !webhookLoading && (
+                                <Banner tone="info">
+                                    <p>Click "Refresh Status" to check webhook configuration</p>
+                                </Banner>
+                            )}
+
+                            {webhookLoading && (
+                                <div style={{ textAlign: 'center', padding: '20px' }}>
+                                    <Spinner size="small" />
+                                    <Text as="p" variant="bodyMd" tone="subdued">
+                                        Checking webhook status...
+                                    </Text>
+                                </div>
+                            )}
+                        </BlockStack>
+                    </Card>
+                </Layout.Section>
+
                 {/* 系统状态 */}
                 <Layout.Section>
                     <Card>
@@ -728,6 +1140,79 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                     </Card>
                 </Layout.Section>
             </Layout>
+
+            {/* Webhook Details Modal */}
+            <Modal
+                open={webhookModalOpen}
+                onClose={() => {
+                    setWebhookModalOpen(false);
+                    setSelectedWebhook(null);
+                }}
+                title="Webhook Details"
+                primaryAction={{
+                    content: 'Delete',
+                    destructive: true,
+                    onAction: () => selectedWebhook && handleDeleteWebhook(selectedWebhook.id),
+                    loading: webhookLoading
+                }}
+                secondaryActions={[
+                    {
+                        content: 'Close',
+                        onAction: () => {
+                            setWebhookModalOpen(false);
+                            setSelectedWebhook(null);
+                        }
+                    }
+                ]}
+            >
+                {selectedWebhook && (
+                    <Modal.Section>
+                        <BlockStack gap="400">
+                            <TextContainer>
+                                <InlineStack align="space-between">
+                                    <Text as="span" variant="bodyMd" fontWeight="semibold">ID:</Text>
+                                    <Text as="span" variant="bodySm" tone="subdued">{selectedWebhook.id}</Text>
+                                </InlineStack>
+
+                                <InlineStack align="space-between">
+                                    <Text as="span" variant="bodyMd" fontWeight="semibold">Topic:</Text>
+                                    <Text as="span" variant="bodySm">{selectedWebhook.topic}</Text>
+                                </InlineStack>
+
+                                <InlineStack align="space-between">
+                                    <Text as="span" variant="bodyMd" fontWeight="semibold">Format:</Text>
+                                    <Text as="span" variant="bodySm">{selectedWebhook.format}</Text>
+                                </InlineStack>
+
+                                <BlockStack gap="100">
+                                    <Text as="span" variant="bodyMd" fontWeight="semibold">Callback URL:</Text>
+                                    <Text as="span" variant="bodySm" tone="subdued" breakWord>
+                                        {selectedWebhook.address}
+                                    </Text>
+                                </BlockStack>
+
+                                <InlineStack align="space-between">
+                                    <Text as="span" variant="bodyMd" fontWeight="semibold">Created At:</Text>
+                                    <Text as="span" variant="bodySm" tone="subdued">
+                                        {new Date(selectedWebhook.createdAt).toLocaleString()}
+                                    </Text>
+                                </InlineStack>
+
+                                <InlineStack align="space-between">
+                                    <Text as="span" variant="bodyMd" fontWeight="semibold">Updated At:</Text>
+                                    <Text as="span" variant="bodySm" tone="subdued">
+                                        {new Date(selectedWebhook.updatedAt).toLocaleString()}
+                                    </Text>
+                                </InlineStack>
+                            </TextContainer>
+
+                            <Banner tone="warning">
+                                <p>Deleting this webhook will stop receiving related event notifications. Please confirm you really need to delete it.</p>
+                            </Banner>
+                        </BlockStack>
+                    </Modal.Section>
+                )}
+            </Modal>
         </Page>
     );
 };

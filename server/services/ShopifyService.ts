@@ -174,12 +174,22 @@ export class ShopifyService {
     /**
      * 根据SKU查找产品（智能选择API）
      */
+    /**
+     * 通过SKU查找产品（智能选择API）- 遵循Shopify最佳实践
+     */
     async getProductBySku(session: Session, sku: string): Promise<any> {
         // 优先使用GraphQL避免弃用警告
         if (this.useGraphQL) {
-            return this.getProductBySkuWithGraphQL(session, sku);
+            try {
+                logger.debug(`Searching product by SKU with GraphQL API: ${sku}`);
+                return await this.getProductBySkuWithGraphQL(session, sku);
+            } catch (error) {
+                logger.warn(`GraphQL product search failed, falling back to REST API:`, error);
+                return this.getProductBySkuRest(session, sku);
+            }
         }
 
+        logger.debug(`Searching product by SKU with REST API: ${sku}`);
         return this.getProductBySkuRest(session, sku);
     }
 
@@ -256,12 +266,24 @@ export class ShopifyService {
     /**
      * 创建新产品（智能选择API）
      */
+    /**
+     * 创建产品（智能选择API）- 遵循Shopify最佳实践
+     */
     async createProduct(session: Session, unifiedProduct: UnifiedProduct, status: string = 'draft'): Promise<any> {
-        // 优先使用GraphQL避免弃用警告
+        // 优先使用GraphQL API避免弃用警告
         if (this.useGraphQL) {
-            return this.createProductWithGraphQL(session, unifiedProduct, status);
+            try {
+                logger.info(`Creating product with GraphQL API (best practice mode): ${unifiedProduct.title}`);
+                return await this.createProductWithGraphQL(session, unifiedProduct, status);
+            } catch (error) {
+                logger.warn(`GraphQL product creation failed, falling back to REST API:`, error);
+                // 如果GraphQL失败，回退到REST API
+                return this.createProductRest(session, unifiedProduct, status);
+            }
         }
 
+        // 使用REST API
+        logger.info(`Creating product with REST API: ${unifiedProduct.title}`);
         return this.createProductRest(session, unifiedProduct, status);
     }
 
@@ -305,9 +327,45 @@ export class ShopifyService {
 
             productData.variants = [variantData];
 
-            // 添加图片
+            // 改进的图片处理逻辑 - 优先创建产品，图片问题不阻止产品创建
+            let imageValidated = false;
+            let finalImageUrl = unifiedProduct.imageUrl;
+
             if (unifiedProduct.imageUrl) {
-                productData.images = [{ src: unifiedProduct.imageUrl }];
+                logger.info(`Preparing to add image to product: ${unifiedProduct.imageUrl}`);
+
+                // 首先尝试编码URL以解决空格等问题
+                const encodedUrl = this.encodeImageUrl(unifiedProduct.imageUrl);
+                if (encodedUrl !== unifiedProduct.imageUrl) {
+                    logger.info(`Using URL-encoded image URL: ${encodedUrl}`);
+                    finalImageUrl = encodedUrl;
+                }
+
+                // 验证图片URL格式
+                if (this.isValidImageUrlFormat(finalImageUrl)) {
+                    try {
+                        // 测试图片URL是否可访问
+                        const imageAccessible = await this.testImageAccess(finalImageUrl);
+
+                        if (imageAccessible) {
+                            // 先尝试在产品创建时包含图片
+                            productData.images = [{
+                                src: finalImageUrl,
+                                alt: unifiedProduct.title
+                            }];
+                            imageValidated = true;
+                            logger.info(`Image URL validated and will be included in product creation: ${finalImageUrl}`);
+                        } else {
+                            logger.warn(`Image URL not accessible during validation, will try adding separately: ${finalImageUrl}`);
+                        }
+                    } catch (imageError) {
+                        logger.warn(`Error testing image access, will try adding separately:`, imageError);
+                    }
+                } else {
+                    logger.warn(`Invalid image URL format, will skip image: ${finalImageUrl}`);
+                }
+            } else {
+                logger.info(`No image URL provided for product: ${unifiedProduct.title}`);
             }
 
             const response = await client.post({
@@ -317,6 +375,32 @@ export class ShopifyService {
 
             const product = response.body?.product;
             logger.info(`Created product: ${product.title} (ID: ${product.id})`);
+
+            // 智能图片处理：根据创建结果和验证状态决定后续操作
+            if (product && unifiedProduct.imageUrl) {
+                const hasImages = product.images && product.images.length > 0;
+
+                if (!hasImages) {
+                    // 产品创建时没有包含图片，尝试单独添加
+                    logger.info(`Product created without image, attempting to add separately for product ${product.id}`);
+
+                    // 使用处理过的图片URL（如果有的话）
+                    const imageUrlToUse = finalImageUrl || unifiedProduct.imageUrl;
+                    const imageAdded = await this.addImageToProduct(session, product.id, imageUrlToUse, unifiedProduct.title);
+
+                    if (imageAdded) {
+                        logger.info(`Successfully added image separately to product ${product.id}`);
+                    } else {
+                        logger.warn(`Failed to add image to product ${product.id}. Product created successfully but without image.`);
+                        // 这里可以选择记录需要手动处理的产品列表
+                    }
+                } else if (imageValidated) {
+                    logger.info(`Product ${product.id} created successfully with ${product.images.length} image(s)`);
+                } else {
+                    // 意外情况：产品有图片但我们没有验证通过，记录一下
+                    logger.info(`Product ${product.id} unexpectedly has ${product.images.length} image(s) despite validation issues`);
+                }
+            }
 
             // 设置库存
             if (product.variants && product.variants[0]) {
@@ -334,6 +418,380 @@ export class ShopifyService {
         } catch (error) {
             logger.error(`Error creating product '${unifiedProduct.title}':`, error);
             throw error;
+        }
+    }
+
+    /**
+     * 验证图片URL格式
+     */
+    private isValidImageUrlFormat(url: string): boolean {
+        if (!url) return false;
+
+        // 基本URL格式检查
+        const urlPattern = /^https?:\/\/.+\.(jpg|jpeg|png|gif|webp|svg)(\?.*)?$/i;
+        if (!urlPattern.test(url)) {
+            // 如果不符合标准图片扩展名，检查是否是已知的图片服务
+            const imageServicePatterns = [
+                /feedonomics\.com/i,
+                /images\.unsplash\.com/i,
+                /shopify\.com/i,
+                /amazonaws\.com/i,
+                /cloudinary\.com/i,
+                /imagekit\.io/i
+            ];
+
+            return imageServicePatterns.some(pattern => pattern.test(url));
+        }
+
+        return true;
+    }
+
+    /**
+     * 测试图片URL是否可访问
+     */
+    private async testImageAccess(url: string, timeout: number = 5000): Promise<boolean> {
+        try {
+            // 尝试多种User-Agent来提高兼容性
+            const userAgents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Shopify-Product-Importer/1.0',
+                'Mozilla/5.0 (compatible; Shopify/1.0; +https://shopify.com/)'
+            ];
+
+            for (const userAgent of userAgents) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'HEAD',
+                        signal: AbortSignal.timeout(timeout),
+                        headers: {
+                            'User-Agent': userAgent,
+                            'Accept': 'image/*,*/*;q=0.8',
+                            'Accept-Encoding': 'gzip, deflate, br',
+                            'Cache-Control': 'no-cache'
+                        }
+                    });
+
+                    if (response.ok) {
+                        const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+                        const isValidImage = (
+                            contentType.startsWith('image/') ||
+                            contentType.includes('octet-stream') ||
+                            contentType === '' // 某些服务器不返回Content-Type
+                        );
+
+                        if (isValidImage) {
+                            logger.debug(`Image URL accessible with User-Agent "${userAgent}": ${url} (${contentType})`);
+                            return true;
+                        }
+                    }
+                } catch (agentError) {
+                    // 尝试下一个User-Agent
+                    continue;
+                }
+            }
+
+            // 如果HEAD请求都失败，尝试GET请求的前几个字节
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    signal: AbortSignal.timeout(timeout),
+                    headers: {
+                        'User-Agent': userAgents[0],
+                        'Range': 'bytes=0-1023', // 只获取前1KB
+                        'Accept': 'image/*,*/*;q=0.8'
+                    }
+                });
+
+                if (response.ok) {
+                    const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+                    if (contentType.startsWith('image/')) {
+                        logger.debug(`Image URL accessible via GET request: ${url} (${contentType})`);
+                        return true;
+                    }
+                }
+            } catch (getError) {
+                logger.warn(`Both HEAD and GET requests failed for image: ${url}`);
+            }
+
+            logger.warn(`Image URL not accessible with any method: ${url}`);
+            return false;
+        } catch (error) {
+            logger.warn(`Image URL access test failed: ${url}`, error);
+            return false;
+        }
+    }
+
+    /**
+     * 单独为产品添加图片（智能选择API）
+     */
+    private async addImageToProduct(session: Session, productId: string, imageUrl: string, altText: string): Promise<boolean> {
+        // 优先使用GraphQL避免弃用警告
+        if (this.useGraphQL) {
+            return this.addImageToProductWithGraphQL(session, productId, imageUrl, altText);
+        }
+
+        return this.addImageToProductRest(session, productId, imageUrl, altText);
+    }
+
+    /**
+     * 使用GraphQL为产品添加图片（遵循Shopify最佳实践）
+     */
+    private async addImageToProductWithGraphQL(session: Session, productId: string, imageUrl: string, altText: string): Promise<boolean> {
+        try {
+            const client = new this.shopify.clients.Graphql({ session });
+
+            // 使用现代化的productCreateMedia mutation，避免弃用警告
+            const mutation = `
+                mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+                    productCreateMedia(productId: $productId, media: $media) {
+                        media {
+                            id
+                            alt
+                            mediaContentType
+                            status
+                            ... on MediaImage {
+                                image {
+                                    url
+                                    width
+                                    height
+                                }
+                            }
+                        }
+                        mediaUserErrors {
+                            field
+                            message
+                            code
+                        }
+                        userErrors {
+                            field
+                            message
+                        }
+                    }
+                }
+            `;
+
+            // 构建符合最佳实践的变量结构
+            const variables = {
+                productId: `gid://shopify/Product/${productId}`,
+                media: [{
+                    originalSource: this.encodeImageUrl(imageUrl), // 确保URL正确编码
+                    alt: altText,
+                    mediaContentType: 'IMAGE'
+                }]
+            };
+
+            const response = await client.request(mutation, { variables });
+
+            // 标准化错误处理
+            if (response.data?.productCreateMedia?.mediaUserErrors?.length > 0) {
+                const errors = response.data.productCreateMedia.mediaUserErrors;
+                logger.warn(`GraphQL image creation mediaUserErrors for product ${productId}:`, errors);
+                throw new Error(`Image creation failed: ${errors.map((e: any) => `${e.field?.join('.')}: ${e.message} (${e.code})`).join(', ')}`);
+            }
+
+            if (response.data?.productCreateMedia?.userErrors?.length > 0) {
+                const errors = response.data.productCreateMedia.userErrors;
+                logger.warn(`GraphQL image creation userErrors for product ${productId}:`, errors);
+                throw new Error(`Image creation failed: ${errors.map((e: any) => `${e.field?.join('.')}: ${e.message}`).join(', ')}`);
+            }
+
+            const media = response.data?.productCreateMedia?.media;
+            if (media && media.length > 0) {
+                logger.info(`Successfully added image to product ${productId} using GraphQL Media API: ${imageUrl}`);
+                return true;
+            } else {
+                logger.warn(`GraphQL image creation returned no media for product ${productId}`);
+                return false;
+            }
+
+        } catch (error) {
+            logger.error(`Error adding image to product ${productId} with GraphQL:`, error);
+            // 回退到REST API
+            logger.info(`Falling back to REST API for product ${productId} image`);
+            return this.addImageToProductRest(session, productId, imageUrl, altText);
+        }
+    }
+
+    /**
+     * 使用REST API为产品添加图片
+     */
+    private async addImageToProductRest(session: Session, productId: string, imageUrl: string, altText: string): Promise<boolean> {
+        try {
+            const client = this.getRestClient(session);
+
+            // 尝试添加原始图片URL
+            try {
+                const response = await client.post({
+                    path: `products/${productId}/images`,
+                    data: {
+                        image: {
+                            src: imageUrl,
+                            alt: altText
+                        }
+                    }
+                });
+
+                if (response.body?.image) {
+                    logger.info(`Successfully added image to product ${productId}: ${imageUrl}`);
+                    return true;
+                }
+            } catch (shopifyError: any) {
+                // 分析Shopify的具体错误
+                const errorMessage = shopifyError.message || '';
+                const errorBody = shopifyError.response?.body || {};
+
+                if (errorMessage.includes('not a valid image file type') ||
+                    errorBody.errors?.image?.some((err: string) => err.includes('not a valid image file type'))) {
+
+                    logger.warn(`Shopify rejected image URL as invalid file type: ${imageUrl}`);
+                    logger.info(`Product ${productId} created successfully but without image due to Shopify image validation`);
+
+                    // 尝试使用一些URL修改技巧
+                    const modifiedUrls = this.generateAlternativeImageUrls(imageUrl);
+
+                    for (const modifiedUrl of modifiedUrls) {
+                        try {
+                            logger.info(`Trying alternative image URL: ${modifiedUrl}`);
+
+                            const retryResponse = await client.post({
+                                path: `products/${productId}/images`,
+                                data: {
+                                    image: {
+                                        src: modifiedUrl,
+                                        alt: altText
+                                    }
+                                }
+                            });
+
+                            if (retryResponse.body?.image) {
+                                logger.info(`Successfully added alternative image to product ${productId}: ${modifiedUrl}`);
+                                return true;
+                            }
+                        } catch (retryError) {
+                            logger.debug(`Alternative URL also failed: ${modifiedUrl}`);
+                            continue;
+                        }
+                    }
+
+                    // 所有尝试都失败了，但产品已创建成功
+                    logger.warn(`All image URLs failed for product ${productId}. Product created without image.`);
+                    return false; // 返回false表示图片添加失败，但不影响产品创建
+                } else {
+                    // 其他类型的错误
+                    logger.error(`Error adding image to product ${productId}:`, shopifyError);
+                    return false;
+                }
+            }
+
+            logger.warn(`Failed to add image to product ${productId}: ${imageUrl} (unknown reason)`);
+            return false;
+        } catch (error) {
+            logger.error(`Error in addImageToProduct for product ${productId}:`, error);
+            return false;
+        }
+    }
+
+    /**
+     * 生成备用图片URL尝试列表
+     */
+    private generateAlternativeImageUrls(originalUrl: string): string[] {
+        const alternatives: string[] = [];
+
+        try {
+            // 0. 首先尝试正确编码原始URL（解决空格等问题）
+            const encodedUrl = this.encodeImageUrl(originalUrl);
+            if (encodedUrl !== originalUrl) {
+                alternatives.push(encodedUrl);
+                logger.info(`Generated URL-encoded alternative: ${encodedUrl}`);
+            }
+
+            const url = new URL(encodedUrl || originalUrl);
+
+            // 1. 添加时间戳参数
+            const withTimestamp = `${encodedUrl || originalUrl}${(encodedUrl || originalUrl).includes('?') ? '&' : '?'}t=${Date.now()}`;
+            alternatives.push(withTimestamp);
+
+            // 2. 如果URL没有明确的图片扩展名，尝试添加
+            if (!originalUrl.match(/\.(jpg|jpeg|png|gif|webp)(\?|$)/i)) {
+                alternatives.push(`${encodedUrl || originalUrl}.jpg`);
+                alternatives.push(`${encodedUrl || originalUrl}.png`);
+            }
+
+            // 3. 尝试转换为HTTPS
+            if (url.protocol === 'http:') {
+                const httpsUrl = (encodedUrl || originalUrl).replace('http://', 'https://');
+                alternatives.push(httpsUrl);
+            }
+
+            // 4. 尝试添加格式参数（对某些CDN有效）
+            alternatives.push(`${encodedUrl || originalUrl}${(encodedUrl || originalUrl).includes('?') ? '&' : '?'}format=jpg`);
+            alternatives.push(`${encodedUrl || originalUrl}${(encodedUrl || originalUrl).includes('?') ? '&' : '?'}format=png`);
+
+            // 5. 使用我们的图片代理服务（作为最后的尝试）
+            const appUrl = process.env.SHOPIFY_APP_URL || process.env.APPLICATION_URL || 'https://shopifydev.amoze.cc';
+            const proxyUrl = `${appUrl}/api/shopify/image-proxy?url=${encodeURIComponent(originalUrl)}`;
+            alternatives.push(proxyUrl);
+
+        } catch (urlError) {
+            logger.debug(`Error parsing URL for alternatives: ${originalUrl}`);
+
+            // 即使解析失败，也尝试基本的URL编码
+            try {
+                const basicEncoded = this.encodeImageUrl(originalUrl);
+                if (basicEncoded !== originalUrl) {
+                    alternatives.push(basicEncoded);
+                }
+            } catch (e) {
+                logger.debug(`Failed to encode URL: ${originalUrl}`);
+            }
+        }
+
+        // 去重并限制尝试次数
+        return [...new Set(alternatives)].slice(0, 6);
+    }
+
+    /**
+     * 正确编码图片URL，处理空格和特殊字符
+     */
+    private encodeImageUrl(url: string): string {
+        try {
+            // 检查URL是否包含需要编码的字符
+            if (!/[\s<>"{}|\\^`\[\]]/.test(url)) {
+                return url; // URL已经是安全的
+            }
+
+            // 分解URL为各个部分
+            const urlObj = new URL(url);
+
+            // 编码路径部分，但保留斜杠
+            const pathParts = urlObj.pathname.split('/');
+            const encodedParts = pathParts.map(part => {
+                // 跳过空字符串（斜杠分割产生的）
+                if (!part) return part;
+
+                // 对每个路径段进行编码，但避免重复编码
+                try {
+                    // 如果部分已经编码，先解码再重新编码
+                    const decoded = decodeURIComponent(part);
+                    return encodeURIComponent(decoded);
+                } catch (e) {
+                    // 如果解码失败，直接编码
+                    return encodeURIComponent(part);
+                }
+            });
+
+            // 重建路径
+            urlObj.pathname = encodedParts.join('/');
+
+            const encodedUrl = urlObj.toString();
+            logger.debug(`URL encoding: '${url}' -> '${encodedUrl}'`);
+            return encodedUrl;
+
+        } catch (error) {
+            logger.warn(`Failed to encode URL '${url}':`, error);
+
+            // 回退到简单的空格编码
+            return url.replace(/\s+/g, '%20');
         }
     }
 
@@ -415,12 +873,33 @@ export class ShopifyService {
                 await this.checkAndUpdateInventory(session, variant, unifiedProduct.availability);
             }
 
-            // 更新图片
+            // 改进的图片更新逻辑
             if (unifiedProduct.imageUrl) {
                 const currentImageSrc = product.images && product.images[0] ? product.images[0].src : null;
                 if (currentImageSrc !== unifiedProduct.imageUrl) {
-                    updateData.images = [{ src: unifiedProduct.imageUrl }];
-                    changed = true;
+                    logger.info(`Updating product image from '${currentImageSrc}' to '${unifiedProduct.imageUrl}'`);
+
+                    // 验证新图片URL
+                    if (this.isValidImageUrlFormat(unifiedProduct.imageUrl)) {
+                        try {
+                            const imageAccessible = await this.testImageAccess(unifiedProduct.imageUrl);
+
+                            if (imageAccessible) {
+                                updateData.images = [{
+                                    src: unifiedProduct.imageUrl,
+                                    alt: unifiedProduct.title
+                                }];
+                                changed = true;
+                                logger.info(`Image URL validated and will be updated: ${unifiedProduct.imageUrl}`);
+                            } else {
+                                logger.warn(`New image URL not accessible, keeping existing image: ${unifiedProduct.imageUrl}`);
+                            }
+                        } catch (imageError) {
+                            logger.warn(`Error testing new image access, keeping existing image:`, imageError);
+                        }
+                    } else {
+                        logger.warn(`Invalid new image URL format, keeping existing image: ${unifiedProduct.imageUrl}`);
+                    }
                 }
             }
 
@@ -861,15 +1340,16 @@ export class ShopifyService {
     }
 
     /**
-     * 使用GraphQL创建产品（替代REST API）
+     * 使用GraphQL创建产品（遵循Shopify最佳实践）
      */
     async createProductWithGraphQL(session: Session, unifiedProduct: UnifiedProduct, status: string = 'draft'): Promise<any> {
         try {
             const client = new this.shopify.clients.Graphql({ session });
 
+            // 使用正确的ProductCreateInput结构，不包含variants
             const mutation = `
-                mutation productCreate($input: ProductInput!) {
-                    productCreate(input: $input) {
+                mutation productCreate($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
+                    productCreate(product: $product, media: $media) {
                         product {
                             id
                             title
@@ -897,9 +1377,10 @@ export class ShopifyService {
                 }
             `;
 
-            const input = {
+            // 正确的ProductCreateInput结构（不包含variants）
+            const productInput = {
                 title: unifiedProduct.title,
-                bodyHtml: unifiedProduct.description,
+                descriptionHtml: unifiedProduct.description,
                 vendor: unifiedProduct.brandName,
                 productType: 'Affiliate Product',
                 status: status.toUpperCase(),
@@ -909,30 +1390,32 @@ export class ShopifyService {
                     .replace(/[^a-z0-9\s-]/g, '')
                     .replace(/\s+/g, '-')
                     .replace(/-+/g, '-')
-                    .replace(/^-|-$/g, ''),
-                variants: [{
-                    price: unifiedProduct.price.toString(),
-                    compareAtPrice: unifiedProduct.salePrice ? unifiedProduct.salePrice.toString() : undefined,
-                    sku: unifiedProduct.sku || `${unifiedProduct.sourceApi}-${unifiedProduct.sourceProductId}`,
-                    inventoryPolicy: 'CONTINUE',
-                    inventoryManagement: 'SHOPIFY',
-                    requiresShipping: true,
-                    taxable: true
-                }],
-                images: unifiedProduct.imageUrl ? [{
-                    src: unifiedProduct.imageUrl,
-                    altText: unifiedProduct.title
-                }] : []
+                    .replace(/^-|-$/g, '')
             };
 
-            const response = await client.request(mutation, {
-                variables: { input }
-            });
+            // 准备图片媒体（如果有）
+            let mediaInput = undefined;
+            if (unifiedProduct.imageUrl) {
+                const encodedImageUrl = this.encodeImageUrl(unifiedProduct.imageUrl);
+                mediaInput = [{
+                    originalSource: encodedImageUrl,
+                    alt: unifiedProduct.title,
+                    mediaContentType: 'IMAGE'
+                }];
+            }
 
+            const variables: any = { product: productInput };
+            if (mediaInput) {
+                variables.media = mediaInput;
+            }
+
+            const response = await client.request(mutation, { variables });
+
+            // 标准化错误处理
             if (response.data?.productCreate?.userErrors?.length > 0) {
                 const errors = response.data.productCreate.userErrors;
-                logger.error('GraphQL product creation errors:', errors);
-                throw new Error(`Product creation failed: ${errors.map((e: any) => e.message).join(', ')}`);
+                logger.error('GraphQL product creation userErrors:', errors);
+                throw new Error(`Product creation failed: ${errors.map((e: any) => `${e.field?.join('.')}: ${e.message}`).join(', ')}`);
             }
 
             const product = response.data?.productCreate?.product;
@@ -941,11 +1424,30 @@ export class ShopifyService {
             }
 
             logger.info(`Product created successfully with GraphQL: ${product.id}`);
+
+            const productIdNumeric = product.id.replace('gid://shopify/Product/', '');
+
+            // 更新默认variant的价格和SKU（使用productVariantsBulkUpdate）
+            if (product.variants?.edges?.[0]?.node?.id) {
+                await this.updateDefaultVariantGraphQL(session, productIdNumeric, product.variants.edges[0].node.id, {
+                    price: unifiedProduct.price.toString(),
+                    compareAtPrice: unifiedProduct.salePrice ? unifiedProduct.salePrice.toString() : undefined,
+                    sku: unifiedProduct.sku || `${unifiedProduct.sourceApi}-${unifiedProduct.sourceProductId}`,
+                });
+            }
+
+            // 返回标准化的产品对象
             return {
-                id: product.id.replace('gid://shopify/Product/', ''),
+                id: productIdNumeric,
                 title: product.title,
                 handle: product.handle,
-                status: product.status
+                status: product.status,
+                variants: product.variants?.edges?.[0]?.node ? [{
+                    id: product.variants.edges[0].node.id,
+                    sku: product.variants.edges[0].node.sku,
+                    price: product.variants.edges[0].node.price,
+                    inventory_item_id: product.variants.edges[0].node.inventoryItem?.id
+                }] : []
             };
 
         } catch (error) {
@@ -955,12 +1457,64 @@ export class ShopifyService {
     }
 
     /**
-     * 使用GraphQL通过SKU查找产品（替代REST API）
+     * 使用GraphQL更新默认变体
+     */
+    private async updateDefaultVariantGraphQL(session: Session, productId: string, variantId: string, variantData: any): Promise<boolean> {
+        try {
+            const client = new this.shopify.clients.Graphql({ session });
+
+            const mutation = `
+                mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+                    productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+                        productVariants {
+                            id
+                            sku
+                            price
+                            compareAtPrice
+                        }
+                        userErrors {
+                            field
+                            message
+                        }
+                    }
+                }
+            `;
+
+            const variables = {
+                productId: `gid://shopify/Product/${productId}`,
+                variants: [{
+                    id: variantId,
+                    price: variantData.price,
+                    compareAtPrice: variantData.compareAtPrice,
+                    sku: variantData.sku
+                }]
+            };
+
+            const response = await client.request(mutation, { variables });
+
+            if (response.data?.productVariantsBulkUpdate?.userErrors?.length > 0) {
+                const errors = response.data.productVariantsBulkUpdate.userErrors;
+                logger.warn(`Failed to update default variant for product ${productId}:`, errors);
+                return false;
+            }
+
+            logger.info(`Successfully updated default variant for product ${productId}`);
+            return true;
+
+        } catch (error) {
+            logger.error(`Error updating default variant for product ${productId}:`, error);
+            return false;
+        }
+    }
+
+    /**
+     * 使用GraphQL通过SKU查找产品（遵循最佳实践）
      */
     async getProductBySkuWithGraphQL(session: Session, sku: string): Promise<any> {
         try {
             const client = new this.shopify.clients.Graphql({ session });
 
+            // 使用符合最佳实践的查询结构，包含变量和适当的字段选择
             const query = `
                 query getProductBySku($query: String!) {
                     products(first: 1, query: $query) {
@@ -976,6 +1530,7 @@ export class ShopifyService {
                                             id
                                             sku
                                             price
+                                            compareAtPrice
                                         }
                                     }
                                 }
@@ -1006,6 +1561,80 @@ export class ShopifyService {
 
         } catch (error) {
             logger.error('Error finding product by SKU with GraphQL:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * 使用GraphQL更新产品（遵循最佳实践）
+     */
+    async updateProductWithGraphQL(session: Session, productId: string, unifiedProduct: UnifiedProduct): Promise<any> {
+        try {
+            const client = new this.shopify.clients.Graphql({ session });
+
+            const mutation = `
+                mutation productUpdate($input: ProductInput!) {
+                    productUpdate(input: $input) {
+                        product {
+                            id
+                            title
+                            handle
+                            status
+                            variants(first: 1) {
+                                edges {
+                                    node {
+                                        id
+                                        sku
+                                        price
+                                        compareAtPrice
+                                    }
+                                }
+                            }
+                        }
+                        userErrors {
+                            field
+                            message
+                        }
+                    }
+                }
+            `;
+
+            // 构建更新输入，只包含需要更新的字段
+            const input = {
+                id: `gid://shopify/Product/${productId}`,
+                title: unifiedProduct.title,
+                bodyHtml: unifiedProduct.description,
+                vendor: unifiedProduct.brandName,
+                variants: [{
+                    price: unifiedProduct.salePrice && unifiedProduct.salePrice < unifiedProduct.price
+                        ? unifiedProduct.salePrice.toString()
+                        : unifiedProduct.price.toString(),
+                    compareAtPrice: unifiedProduct.salePrice && unifiedProduct.salePrice < unifiedProduct.price
+                        ? unifiedProduct.price.toString()
+                        : undefined,
+                }]
+            };
+
+            const response = await client.request(mutation, {
+                variables: { input }
+            });
+
+            if (response.data?.productUpdate?.userErrors?.length > 0) {
+                const errors = response.data.productUpdate.userErrors;
+                logger.error('GraphQL product update userErrors:', errors);
+                throw new Error(`Product update failed: ${errors.map((e: any) => `${e.field?.join('.')}: ${e.message}`).join(', ')}`);
+            }
+
+            const product = response.data?.productUpdate?.product;
+            if (!product) {
+                throw new Error('Product update failed: No product returned');
+            }
+
+            logger.info(`Product updated successfully with GraphQL: ${product.id}`);
+            return product;
+
+        } catch (error) {
+            logger.error('Error updating product with GraphQL:', error);
             throw error;
         }
     }
