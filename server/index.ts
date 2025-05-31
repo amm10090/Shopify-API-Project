@@ -12,7 +12,7 @@ if (process.env.NODE_ENV === 'production') {
     }
 }
 
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { PrismaClient } from '@prisma/client';
@@ -80,14 +80,7 @@ app.use((req, res, next) => {
         return;
     }
 
-    // 记录请求信息用于调试
-    console.log(`Cloudflare request: ${req.method} ${req.path}`, {
-        cfRay: req.get('CF-Ray'),
-        cfConnectingIP: req.get('CF-Connecting-IP'),
-        userAgent: req.get('User-Agent'),
-        origin: req.get('Origin'),
-        host: req.get('Host')
-    });
+    // 移除繁琐的Cloudflare请求日志，只在错误时记录
 
     next();
 });
@@ -112,12 +105,30 @@ async function initializeVite() {
                 return;
             }
 
+            // 检测是否在Cloudflare隧道环境中
+            const isCloudflareEnv = process.env.SHOPIFY_APP_URL?.includes('.trycloudflare.com') ||
+                process.env.APPLICATION_URL?.includes('.trycloudflare.com') ||
+                process.env.SHOPIFY_APP_URL?.includes('.amoze.cc') ||
+                process.env.APPLICATION_URL?.includes('.amoze.cc');
+
+            let hmrConfig: any = {
+                port: 24678,
+                host: '0.0.0.0', // 允许外部连接
+            };
+
+            if (isCloudflareEnv) {
+                // 在Cloudflare隧道环境下完全禁用HMR
+                // 因为WebSocket连接在隧道环境下不可靠
+                hmrConfig = false;
+                logger.info('Cloudflare tunnel detected, disabling HMR for stability');
+            } else {
+                logger.info('Local development environment, using localhost HMR');
+            }
+
             viteDevServer = await createServer({
                 server: {
                     middlewareMode: true,
-                    hmr: {
-                        port: 24678, // 使用不同的端口避免冲突
-                    }
+                    hmr: hmrConfig
                 },
                 appType: 'custom',
                 root: path.join(__dirname, '..'),
@@ -132,7 +143,7 @@ async function initializeVite() {
                 }
             });
 
-            logger.info('Vite development server initialized');
+            // logger.info('Vite development server initialized');
         } catch (error) {
             logger.warn('Failed to initialize Vite dev server:', error);
         }
@@ -146,14 +157,14 @@ app.use(helmet({
     contentSecurityPolicy: {
         directives: {
             defaultSrc: ["'self'", "https:", "wss:", "ws:"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.shopify.com", "https://*.shopifycloud.com", "https:"],
-            styleSrc: ["'self'", "'unsafe-inline'", "https:", "https://cdn.shopify.com"],
-            imgSrc: ["'self'", "data:", "https:", "blob:"],
-            connectSrc: ["'self'", "https:", "wss:", "ws:", "https://*.shopifycloud.com", "https://*.shopify.com"],
-            fontSrc: ["'self'", "https:", "data:"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.shopify.com", "https://*.shopifycloud.com", "https:", "blob:"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https:", "https://cdn.shopify.com", "https://*.shopifycloud.com"],
+            imgSrc: ["'self'", "data:", "https:", "blob:", "https://*.feedonomics.com", "https://*.shopifycloud.com"],
+            connectSrc: ["'self'", "https:", "wss:", "ws:", "https://*.shopifycloud.com", "https://*.shopify.com", "wss://shopifydev.amoze.cc:*"],
+            fontSrc: ["'self'", "https:", "data:", "https://*.shopifycloud.com"],
             objectSrc: ["'none'"],
             mediaSrc: ["'self'", "https:"],
-            frameSrc: ["'self'", "https://*.myshopify.com", "https://admin.shopify.com", "https:"],
+            frameSrc: ["'self'", "https://*.myshopify.com", "https://admin.shopify.com", "https:", "blob:"],
             frameAncestors: ["https://*.myshopify.com", "https://admin.shopify.com", "'self'"],
             upgradeInsecureRequests: null,
         },
@@ -181,22 +192,43 @@ app.use((req, res, next) => {
         const sanitizedShop = shop.replace(/[^a-zA-Z0-9\-\.]/g, '');
         const shopDomain = sanitizedShop.includes('.myshopify.com') ? sanitizedShop : `${sanitizedShop}.myshopify.com`;
 
-        // 设置允许特定shop的frame-ancestors
-        res.setHeader(
-            'Content-Security-Policy',
-            `frame-ancestors https://${shopDomain} https://admin.shopify.com https://*.shopify.com https://${tunnelDomain};`
-        );
+        // 设置完整的CSP策略，包含所有必要的指令
+        const cspHeader = [
+            `default-src 'self' https: wss: ws:`,
+            `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.shopify.com https://*.shopifycloud.com https: blob:`,
+            `style-src 'self' 'unsafe-inline' https: https://cdn.shopify.com https://*.shopifycloud.com`,
+            `img-src 'self' data: https: blob: https://*.feedonomics.com https://*.shopifycloud.com`,
+            `connect-src 'self' https: wss: ws: https://*.shopifycloud.com https://*.shopify.com wss://${tunnelDomain}:* wss://${tunnelDomain} ws://localhost:* wss://localhost:*`,
+            `font-src 'self' https: data: https://*.shopifycloud.com`,
+            `object-src 'none'`,
+            `media-src 'self' https:`,
+            `frame-src 'self' https://*.myshopify.com https://admin.shopify.com https: blob:`,
+            `frame-ancestors https://${shopDomain} https://admin.shopify.com https://*.shopify.com https://${tunnelDomain}`
+        ].join('; ');
+
+        res.setHeader('Content-Security-Policy', cspHeader);
 
         // 完全移除X-Frame-Options，让CSP frame-ancestors控制
         res.removeHeader('X-Frame-Options');
 
-        logger.info(`Set CSP frame-ancestors for shop: ${shopDomain}, tunnel: ${tunnelDomain}`);
+        // 移除CSP设置日志，只在错误时打印
+        // logger.info(`Set CSP frame-ancestors for shop: ${shopDomain}, tunnel: ${tunnelDomain}`);
     } else {
         // 如果没有shop参数，设置宽松的策略用于开发
-        res.setHeader(
-            'Content-Security-Policy',
-            `frame-ancestors https://*.myshopify.com https://admin.shopify.com https://*.shopify.com https://${tunnelDomain} 'self';`
-        );
+        const cspHeader = [
+            `default-src 'self' https: wss: ws:`,
+            `script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.shopify.com https://*.shopifycloud.com https: blob:`,
+            `style-src 'self' 'unsafe-inline' https: https://cdn.shopify.com https://*.shopifycloud.com`,
+            `img-src 'self' data: https: blob: https://*.feedonomics.com https://*.shopifycloud.com`,
+            `connect-src 'self' https: wss: ws: https://*.shopifycloud.com https://*.shopify.com wss://${tunnelDomain}:* wss://${tunnelDomain} ws://localhost:* wss://localhost:*`,
+            `font-src 'self' https: data: https://*.shopifycloud.com`,
+            `object-src 'none'`,
+            `media-src 'self' https:`,
+            `frame-src 'self' https://*.myshopify.com https://admin.shopify.com https: blob:`,
+            `frame-ancestors https://*.myshopify.com https://admin.shopify.com https://*.shopify.com https://${tunnelDomain} 'self'`
+        ].join('; ');
+
+        res.setHeader('Content-Security-Policy', cspHeader);
         res.removeHeader('X-Frame-Options');
     }
 
@@ -254,24 +286,34 @@ app.use(cors({
     ]
 }));
 
-// 添加 QUIC 流错误处理
+// 添加 QUIC 流错误处理和 HTTP2 协议错误处理
 app.use((req, res, next) => {
     // 监听连接错误
     req.on('error', (err) => {
-        console.error('Request error:', err);
+        // 只在非HTTP2协议错误时记录
+        if (!err.message.includes('HTTP2') && !err.message.includes('PROTOCOL_ERROR')) {
+            console.error('Request error:', err);
+        }
         if (!res.headersSent) {
             res.status(400).json({ error: 'Request error', message: err.message });
         }
     });
 
     res.on('error', (err) => {
-        console.error('Response error:', err);
+        // 只在非HTTP2协议错误时记录
+        if (!err.message.includes('HTTP2') && !err.message.includes('PROTOCOL_ERROR')) {
+            console.error('Response error:', err);
+        }
     });
 
     // 设置错误处理
     res.on('close', () => {
         if (!res.writableEnded) {
-            console.log('Connection closed prematurely');
+            // 在Cloudflare环境下，连接提前关闭是正常的
+            const isCloudflareEnv = req.get('CF-Ray') || req.hostname.includes('.trycloudflare.com') || req.hostname.includes('.amoze.cc');
+            if (!isCloudflareEnv) {
+                console.log('Connection closed prematurely');
+            }
         }
     });
 
@@ -304,14 +346,14 @@ app.use((req, res, next) => {
     next();
 });
 
-// Request logging
-app.use((req, res, next) => {
-    logger.info(`${req.method} ${req.path}`, {
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-    });
-    next();
-});
+// Request logging - 移除繁琐的日志，只在错误中间件记录
+// app.use((req, res, next) => {
+//     logger.info(`${req.method} ${req.path}`, {
+//         ip: req.ip,
+//         userAgent: req.get('User-Agent')
+//     });
+//     next();
+// });
 
 // Health check
 app.get('/health', (req, res) => {
@@ -321,6 +363,7 @@ app.get('/health', (req, res) => {
         version: process.env.npm_package_version || '1.0.0'
     });
 });
+
 
 // API 路由
 app.use('/auth', authRoutes);
@@ -359,7 +402,7 @@ async function startServer() {
 
             // 使用 Vite 中间件处理所有静态资源请求
             app.use(viteDevServer.middlewares);
-            logger.info('Using Vite development server for static files with Cloudflare optimizations');
+            // logger.info('Using Vite development server for static files with Cloudflare optimizations');
         } else {
             // 生产模式或 Vite 不可用时的静态文件服务
             const distPath = path.join(__dirname, '../client');
@@ -373,7 +416,7 @@ async function startServer() {
                         }
                     }
                 }));
-                logger.info('Serving static files from dist/client');
+                // logger.info('Serving static files from dist/client');
             } else {
                 app.use(express.static(path.join(__dirname, '../'), {
                     index: false,
@@ -384,7 +427,7 @@ async function startServer() {
                         }
                     }
                 }));
-                logger.info('Serving static files from project root');
+                // logger.info('Serving static files from project root');
             }
         }
 
@@ -402,7 +445,7 @@ async function startServer() {
                     'https://shopifydev.amoze.cc'; // 更新为当前URL
                 const embeddedUrl = `https://admin.shopify.com/store/${shop.replace('.myshopify.com', '')}/apps/${process.env.SHOPIFY_API_KEY || '22c17ecd1ecf677dc1c78552e650bd34'}`;
 
-                logger.info(`Redirecting to embedded app URL: ${embeddedUrl}`);
+                // logger.info(`Redirecting to embedded app URL: ${embeddedUrl}`);
                 return res.redirect(embeddedUrl);
             }
 
@@ -474,20 +517,20 @@ async function startServer() {
                 // 对于自定义应用，如果没有shop参数，使用环境变量中的默认值
                 if (!shop && appType === 'custom') {
                     shop = process.env.SHOPIFY_STORE_NAME || 'amm10090.myshopify.com';
-                    logger.info(`Using default shop for custom app: ${shop}`);
+                    // logger.info(`Using default shop for custom app: ${shop}`);
                 }
 
                 // 如果是直接访问localhost且没有shop参数，强制设为自定义应用模式
                 if (req.hostname === 'localhost' && !shop && !req.query.shop) {
                     appType = 'custom';
                     shop = process.env.SHOPIFY_STORE_NAME || 'amm10090.myshopify.com';
-                    logger.info(`Localhost access detected - forcing custom app mode with shop: ${shop}`);
+                    // logger.info(`Localhost access detected - forcing custom app mode with shop: ${shop}`);
                 }
 
                 // 验证和修正shop参数格式
                 if (shop && !shop.includes('.myshopify.com')) {
                     const correctedShop = shop.includes('.') ? shop : `${shop}.myshopify.com`;
-                    logger.info(`Correcting shop parameter from '${shop}' to '${correctedShop}'`);
+                    // logger.info(`Correcting shop parameter from '${shop}' to '${correctedShop}'`);
                     shop = correctedShop; // 使用修正后的值
                 }
 
@@ -497,7 +540,7 @@ async function startServer() {
                 // 为自定义应用生成有效的 host 参数
                 if (appType === 'custom' && shop && !validHost) {
                     validHost = Buffer.from(`${shop}/admin`).toString('base64');
-                    logger.info(`Generated host parameter for custom app: ${validHost}`);
+                    // logger.info(`Generated host parameter for custom app: ${validHost}`);
                 }
 
                 // 验证最终的host参数
@@ -555,7 +598,7 @@ async function startServer() {
                 // 在head标签结束前插入配置脚本
                 html = html.replace('</head>', `${configScript}</head>`);
 
-                logger.info(`Serving app with config: shop=${shop}, host=${validHost ? '***' : 'missing'}, embedded=${embedded}, apiKey=${apiKey ? '***' : 'missing'}`);
+                // logger.info(`Serving app with config: shop=${shop}, host=${validHost ? '***' : 'missing'}, embedded=${embedded}, apiKey=${apiKey ? '***' : 'missing'}`);
 
                 res.setHeader('Content-Type', 'text/html');
                 res.send(html);

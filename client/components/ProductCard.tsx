@@ -122,14 +122,20 @@ export const ProductCard: React.FC<ProductCardProps> = ({
                                 maxHeight: '100%',
                                 objectFit: 'contain'
                             }}
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
                             onError={(e) => {
                                 // 图片加载失败时显示占位符
-                                e.currentTarget.style.display = 'none';
-                                e.currentTarget.parentElement!.innerHTML = `
-                                    <div style="color: #8c9196; text-align: center; padding: 20px;">
-                                        <p>图片加载失败</p>
-                                    </div>
-                                `;
+                                const img = e.currentTarget;
+                                img.style.display = 'none';
+                                if (img.parentElement) {
+                                    img.parentElement.innerHTML = `
+                                        <div style="color: #8c9196; text-align: center; padding: 20px;">
+                                            <p>图片加载失败</p>
+                                            <p style="font-size: 12px; margin-top: 8px;">无法加载外部图片资源</p>
+                                        </div>
+                                    `;
+                                }
                             }}
                         />
                     ) : (

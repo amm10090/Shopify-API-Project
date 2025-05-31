@@ -1,10 +1,21 @@
+// 立即导入Vite客户端拦截器（必须在最前面）
+import './utils/viteClientInterceptor'
+
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AppProvider as PolarisAppProvider } from '@shopify/polaris'
 import '@shopify/polaris/build/esm/styles.css'
 import { AppProvider } from './contexts/AppContext'
+import { initErrorHandling } from './utils/appBridge'
+import { initHMRErrorHandler } from './utils/hmrErrorHandler'
 import App from './App'
+
+// 立即初始化HMR错误处理器（在任何其他代码之前）
+initHMRErrorHandler();
+
+// 初始化错误处理
+initErrorHandling();
 
 // 添加一些全局样式来确保正确渲染
 const globalStyles = `

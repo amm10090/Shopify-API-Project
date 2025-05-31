@@ -30,10 +30,11 @@ export class CustomAppService {
             throw new Error('SHOPIFY_STORE_NAME is required for custom app');
         }
 
-        logger.info('CustomAppService initialized', {
-            shopDomain: this.shopDomain,
-            hasToken: !!this.accessToken
-        });
+        // 移除初始化日志，只在错误时打印
+        // logger.info('CustomAppService initialized', {
+        //     shopDomain: this.shopDomain,
+        //     hasToken: !!this.accessToken
+        // });
     }
 
     /**
@@ -75,10 +76,11 @@ export class CustomAppService {
 
             if (response.ok) {
                 const data = await response.json() as ShopifyShopResponse;
-                logger.info('Custom app validation successful', {
-                    shopName: data.shop?.name,
-                    shopId: data.shop?.id
-                });
+                // 移除成功验证日志，只在错误时打印
+                // logger.info('Custom app validation successful', {
+                //     shopName: data.shop?.name,
+                //     shopId: data.shop?.id
+                // });
 
                 return {
                     valid: true,

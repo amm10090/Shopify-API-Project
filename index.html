@@ -13,12 +13,120 @@
     <meta name="shopify-embedded" content="%EMBEDDED%" />
     <meta name="shopify-debug" content="true" />
     
-    <!-- Conditionally load App Bridge only for OAuth apps -->
+    <!-- 早期错误拦截器 - 必须在任何其他脚本之前 -->
     <script>
-      if (window.location.search.includes('shop=') || document.querySelector('meta[name="shopify-shop-domain"]')?.content !== '%SHOP%') {
-        const script = document.createElement('script');
-        script.src = 'https://cdn.shopify.com/shopifycloud/app-bridge.js';
-        document.head.appendChild(script);
+      // 检测Cloudflare环境
+      const isCloudflareEnv = window.location.hostname.includes('.trycloudflare.com') ||
+                              window.location.hostname.includes('.amoze.cc');
+      
+      // 早期拦截WebSocket和HTTP2错误
+      if (isCloudflareEnv) {
+        console.log('🌐 激活Cloudflare隧道模式错误拦截器');
+        
+        // 立即劫持WebSocket以阻止HMR连接
+        const OriginalWebSocket = window.WebSocket;
+        window.WebSocket = function(url, protocols) {
+          const urlStr = url.toString();
+          if (urlStr.includes('24678') || urlStr.includes('0.0.0.0')) {
+            console.debug('🌐 阻止HMR WebSocket连接:', urlStr);
+            // 返回一个立即关闭的模拟WebSocket
+            const mock = {
+              readyState: 3,
+              close: function() {},
+              send: function() {},
+              addEventListener: function() {},
+              removeEventListener: function() {},
+              dispatchEvent: function() { return false; },
+              onopen: null,
+              onclose: null,
+              onerror: null,
+              onmessage: null
+            };
+            setTimeout(() => {
+              if (mock.onclose) mock.onclose({code: 1000, reason: 'Blocked'});
+            }, 1);
+            return mock;
+          }
+          return new OriginalWebSocket(url, protocols);
+        };
+        // 复制静态属性
+        window.WebSocket.CONNECTING = 0;
+        window.WebSocket.OPEN = 1;
+        window.WebSocket.CLOSING = 2;
+        window.WebSocket.CLOSED = 3;
+        
+        // 拦截console.error
+        const originalConsoleError = console.error;
+        console.error = function(...args) {
+          const message = args.join(' ');
+          // 过滤WebSocket和HTTP2协议错误
+          if (message.includes('WebSocket') || 
+              message.includes('24678') || 
+              message.includes('wss://0.0.0.0:24678') ||
+              message.includes('ERR_HTTP2_PROTOCOL_ERROR') ||
+              message.includes('PROTOCOL_ERROR') ||
+              message.includes('failed to connect to websocket') ||
+              message.includes('0.0.0.0:24678') ||
+              message.includes('createConnection') ||
+              message.includes('client:802') ||
+              message.includes('client:437') ||
+              message.includes('client:811') ||
+              message.includes('client:290') ||
+              message.includes('client:383') ||
+              message.includes('client:908')) {
+            console.debug('🌐 已拦截WebSocket错误');
+            return; // 静默处理
+          }
+          originalConsoleError.apply(console, args);
+        };
+
+        // 拦截全局错误
+        window.addEventListener('error', function(event) {
+          const message = event.message || (event.error && event.error.message) || '';
+          const source = event.filename || '';
+          if (message.includes('WebSocket') || 
+              message.includes('24678') || 
+              message.includes('wss://0.0.0.0:24678') ||
+              message.includes('ERR_HTTP2_PROTOCOL_ERROR') ||
+              message.includes('PROTOCOL_ERROR') ||
+              message.includes('createConnection') ||
+              source.includes('client:802') ||
+              source.includes('client:437') ||
+              source.includes('client:811') ||
+              source.includes('client:290') ||
+              source.includes('client:383') ||
+              source.includes('client:908')) {
+            console.debug('🌐 已拦截全局WebSocket错误');
+            event.preventDefault();
+            event.stopPropagation();
+            return false;
+          }
+        }, true);
+
+        // 拦截Promise错误
+        window.addEventListener('unhandledrejection', function(event) {
+          const message = event.reason && event.reason.message || event.reason || '';
+          if (message.includes && (message.includes('WebSocket') || 
+              message.includes('24678') || 
+              message.includes('ERR_HTTP2_PROTOCOL_ERROR') ||
+              message.includes('PROTOCOL_ERROR'))) {
+            event.preventDefault();
+            return false;
+          }
+        }, true);
+      }
+    </script>
+
+    <!-- App Bridge - 必须作为第一个script标签同步加载 -->
+    <script>
+      // 检查是否需要加载App Bridge
+      const needsAppBridge = window.location.search.includes('shop=') || 
+                            (document.querySelector('meta[name="shopify-shop-domain"]')?.content !== '%SHOP%' && 
+                             document.querySelector('meta[name="shopify-shop-domain"]')?.content !== '');
+      
+      if (needsAppBridge) {
+        // 同步加载App Bridge，确保它是第一个脚本
+        document.write('<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"><\/script>');
       }
     </script>
   </head>
