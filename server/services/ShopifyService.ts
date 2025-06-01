@@ -270,6 +270,9 @@ export class ShopifyService {
      * 创建产品（智能选择API）- 遵循Shopify最佳实践
      */
     async createProduct(session: Session, unifiedProduct: UnifiedProduct, status: string = 'draft'): Promise<any> {
+        // 确保状态始终为draft，除非明确指定为其他值
+        status = status || 'draft';
+
         // 优先使用GraphQL API避免弃用警告
         if (this.useGraphQL) {
             try {
@@ -1515,10 +1518,10 @@ export class ShopifyService {
         try {
             const client = new this.shopify.clients.Graphql({ session });
 
-            // 使用正确的ProductCreateInput结构，不包含variants
+            // 使用正确的ProductInput结构，符合最新的Shopify Admin API规范
             const mutation = `
-                mutation productCreate($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
-                    productCreate(product: $product, media: $media) {
+                mutation productCreate($input: ProductInput!, $media: [CreateMediaInput!]) {
+                    productCreate(input: $input, media: $media) {
                         product {
                             id
                             title
@@ -1546,7 +1549,7 @@ export class ShopifyService {
                 }
             `;
 
-            // 正确的ProductCreateInput结构（不包含variants）
+            // 正确的ProductInput结构（不包含variants）
             const productInput = {
                 title: unifiedProduct.title,
                 descriptionHtml: unifiedProduct.description,
@@ -1573,7 +1576,7 @@ export class ShopifyService {
                 }];
             }
 
-            const variables: any = { product: productInput };
+            const variables: any = { input: productInput };
             if (mediaInput) {
                 variables.media = mediaInput;
             }
@@ -1596,7 +1599,7 @@ export class ShopifyService {
 
             const productIdNumeric = product.id.replace('gid://shopify/Product/', '');
 
-            // 更新默认variant的价格和SKU（使用productVariantsBulkUpdate）
+            // 更新默认variant的价格和SKU（使用productVariantUpdate）
             if (product.variants?.edges?.[0]?.node?.id) {
                 await this.updateDefaultVariantGraphQL(session, productIdNumeric, product.variants.edges[0].node.id, {
                     price: unifiedProduct.price.toString(),
@@ -1632,14 +1635,94 @@ export class ShopifyService {
         try {
             const client = new this.shopify.clients.Graphql({ session });
 
+            // 使用productVariantUpdate单个变体更新而不是批量更新
             const mutation = `
-                mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-                    productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-                        productVariants {
+                mutation productVariantUpdate($input: ProductVariantInput!) {
+                    productVariantUpdate(input: $input) {
+                        productVariant {
                             id
-                            sku
                             price
                             compareAtPrice
+                            inventoryItem {
+                                id
+                            }
+                        }
+                        userErrors {
+                            field
+                            message
+                        }
+                    }
+                }
+            `;
+
+            // 构建正确的变体输入对象 - 移除sku字段，因为它不在ProductVariantInput类型中
+            const variables = {
+                input: {
+                    id: variantId,
+                    price: variantData.price,
+                    compareAtPrice: variantData.compareAtPrice
+                    // 移除sku字段，因为ProductVariantInput不支持
+                }
+            };
+
+            const response = await client.request(mutation, { variables });
+
+            if (response.data?.productVariantUpdate?.userErrors?.length > 0) {
+                const errors = response.data.productVariantUpdate.userErrors;
+                logger.warn(`Failed to update default variant for product ${productId}:`, errors);
+                return false;
+            }
+
+            // 如果需要设置SKU，使用metafields进行存储
+            if (variantData.sku) {
+                try {
+                    // 使用元字段存储SKU
+                    await this.setVariantMetafield(
+                        session,
+                        variantId.replace('gid://shopify/ProductVariant/', ''),
+                        'custom',
+                        'sku',
+                        variantData.sku,
+                        'single_line_text_field'
+                    );
+                    logger.info(`Successfully added SKU as metafield for variant ${variantId}`);
+                } catch (metafieldError) {
+                    logger.warn(`Failed to add SKU as metafield: ${metafieldError}`);
+                    // 继续执行，不因元字段错误而中断流程
+                }
+            }
+
+            logger.info(`Successfully updated default variant for product ${productId}`);
+            return true;
+
+        } catch (error) {
+            logger.error(`Error updating default variant for product ${productId}:`, error);
+            return false;
+        }
+    }
+
+    /**
+     * 为变体设置元字段
+     */
+    private async setVariantMetafield(
+        session: Session,
+        variantId: string,
+        namespace: string,
+        key: string,
+        value: any,
+        valueType: string
+    ): Promise<any> {
+        try {
+            const client = new this.shopify.clients.Graphql({ session });
+
+            const mutation = `
+                mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+                    metafieldsSet(metafields: $metafields) {
+                        metafields {
+                            id
+                            namespace
+                            key
+                            value
                         }
                         userErrors {
                             field
@@ -1650,29 +1733,26 @@ export class ShopifyService {
             `;
 
             const variables = {
-                productId: `gid://shopify/Product/${productId}`,
-                variants: [{
-                    id: variantId,
-                    price: variantData.price,
-                    compareAtPrice: variantData.compareAtPrice,
-                    sku: variantData.sku
+                metafields: [{
+                    ownerId: `gid://shopify/ProductVariant/${variantId}`,
+                    namespace,
+                    key,
+                    value: String(value),
+                    type: valueType
                 }]
             };
 
             const response = await client.request(mutation, { variables });
 
-            if (response.data?.productVariantsBulkUpdate?.userErrors?.length > 0) {
-                const errors = response.data.productVariantsBulkUpdate.userErrors;
-                logger.warn(`Failed to update default variant for product ${productId}:`, errors);
-                return false;
+            if (response.data?.metafieldsSet?.userErrors?.length > 0) {
+                const errors = response.data.metafieldsSet.userErrors;
+                throw new Error(`Failed to set metafield: ${errors.map((e: any) => e.message).join(', ')}`);
             }
 
-            logger.info(`Successfully updated default variant for product ${productId}`);
-            return true;
-
+            return response.data?.metafieldsSet?.metafields?.[0];
         } catch (error) {
-            logger.error(`Error updating default variant for product ${productId}:`, error);
-            return false;
+            logger.error(`Error setting variant metafield:`, error);
+            throw error;
         }
     }
 
@@ -2468,5 +2548,179 @@ export class ShopifyService {
             newUrl.searchParams.set(key, value);
         });
         return newUrl.toString();
+    }
+
+    /**
+     * 使用新产品模型的productSet同步产品数据
+     * 该方法利用Shopify 2024-07版本引入的新产品模型API来同步产品
+     */
+    async syncProductWithProductSet(session: Session, unifiedProduct: UnifiedProduct, status: string = 'draft'): Promise<any> {
+        try {
+            const client = new this.shopify.clients.Graphql({ session });
+
+            // 检查产品是否已存在
+            let existingProductId = unifiedProduct.shopifyProductId;
+            let existingProduct = null;
+
+            if (existingProductId) {
+                // 获取现有产品信息，包括选项和变体
+                const getProductQuery = `
+                    query getProduct($id: ID!) {
+                        product(id: $id) {
+                            id
+                            title
+                            descriptionHtml
+                            vendor
+                            options {
+                                id
+                                name
+                                position
+                                values
+                            }
+                            variants(first: 1) {
+                                edges {
+                                    node {
+                                        id
+                                        inventoryItem {
+                                            id
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                `;
+
+                const currentProductResponse = await client.request(getProductQuery, {
+                    variables: { id: `gid://shopify/Product/${existingProductId}` }
+                });
+
+                existingProduct = currentProductResponse.data?.product;
+
+                if (!existingProduct) {
+                    logger.warn(`Product with ID ${existingProductId} not found, will create a new one`);
+                    existingProductId = undefined; // 修改：使用undefined而不是null
+                }
+            }
+
+            // 构建productSet变量
+            const productSetInput: any = {
+                product: {
+                    title: unifiedProduct.title,
+                    descriptionHtml: unifiedProduct.description || '',
+                    vendor: unifiedProduct.brandName || '',
+                    status: status,
+                    productType: unifiedProduct.categories?.[0] || '',
+                    productOptions: [
+                        {
+                            name: "Title",
+                            values: ["Default Title"]
+                        }
+                    ]
+                },
+                variants: [
+                    {
+                        price: unifiedProduct.price.toString(),
+                        compareAtPrice: unifiedProduct.salePrice && unifiedProduct.salePrice < unifiedProduct.price ?
+                            unifiedProduct.price.toString() : null,
+                        optionValues: [
+                            {
+                                option: {
+                                    name: "Title"
+                                },
+                                value: "Default Title"
+                            }
+                        ],
+                        // 使用metafields代替SKU
+                        metafields: [
+                            {
+                                namespace: "custom",
+                                key: "sku",
+                                value: unifiedProduct.sku || `${unifiedProduct.sourceApi}-${unifiedProduct.sourceProductId}`,
+                                type: "single_line_text_field"
+                            }
+                        ]
+                    }
+                ]
+            };
+
+            // 如果是更新已有产品，添加产品ID
+            if (existingProductId) {
+                productSetInput.product.id = `gid://shopify/Product/${existingProductId}`;
+            }
+
+            // 使用productSet mutation进行同步
+            const productSetMutation = `
+                mutation productSet($input: ProductSetInput!) {
+                    productSet(input: $input) {
+                        product {
+                            id
+                            title
+                            handle
+                            status
+                            variants(first: 1) {
+                                edges {
+                                    node {
+                                        id
+                                        price
+                                        compareAtPrice
+                                        inventoryItem {
+                                            id
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        userErrors {
+                            field
+                            message
+                        }
+                    }
+                }
+            `;
+
+            const response = await client.request(productSetMutation, {
+                variables: { input: productSetInput }
+            });
+
+            if (response.data?.productSet?.userErrors?.length > 0) {
+                const errors = response.data.productSet.userErrors;
+                logger.error('Product sync failed with errors:', errors);
+                throw new Error(`Failed to sync product: ${errors.map((e: { message: string }) => e.message).join(', ')}`); // 修改：添加类型注解
+            }
+
+            const product = response.data?.productSet?.product;
+            if (!product) {
+                throw new Error('No product data returned from sync operation');
+            }
+
+            const productIdNumeric = product.id.replace('gid://shopify/Product/', '');
+
+            // 处理库存
+            if (product.variants?.edges?.[0]?.node?.inventoryItem?.id) {
+                const variant = product.variants.edges[0].node;
+                await this.checkAndUpdateInventoryGraphQL(session, variant, unifiedProduct.availability);
+            }
+
+            logger.info(`Product synced successfully with ProductSet: ${productIdNumeric}`);
+
+            // 返回标准化的产品对象
+            return {
+                id: productIdNumeric,
+                title: product.title,
+                handle: product.handle,
+                status: product.status,
+                variants: product.variants?.edges?.[0]?.node ? [{
+                    id: product.variants.edges[0].node.id.replace('gid://shopify/ProductVariant/', ''),
+                    price: product.variants.edges[0].node.price,
+                    compare_at_price: product.variants.edges[0].node.compareAtPrice,
+                    inventory_item_id: product.variants.edges[0].node.inventoryItem?.id?.replace('gid://shopify/InventoryItem/', '')
+                }] : []
+            };
+
+        } catch (error) {
+            logger.error('Error syncing product with ProductSet:', error);
+            throw error;
+        }
     }
 } 

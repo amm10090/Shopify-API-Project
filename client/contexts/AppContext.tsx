@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useRef, useMemo, useCallback } from 'react';
 
 // 定义应用状态接口
 interface User {
@@ -51,7 +51,7 @@ interface AppProviderProps {
 // 检测是否为自定义应用模式
 const isCustomAppMode = () => {
     const windowConfig = (window as any).shopifyConfig || {};
-    return windowConfig.appType === 'custom' || 
+    return windowConfig.appType === 'custom' ||
         windowConfig.isCustomApp === true ||
         windowConfig.skipAppBridge === true ||
         new URLSearchParams(window.location.search).get('appType') === 'custom' ||
@@ -77,16 +77,21 @@ const createCustomAppFetch = (): typeof fetch => {
 
 // Context Provider 组件
 export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
-    // 检测应用模式
-    const isCustomApp = isCustomAppMode();
+    // 检测应用模式 - 只在组件初始化时执行一次
+    const isCustomApp = useRef(isCustomAppMode()).current;
 
-    // 创建认证fetch函数 - 根据最新的Shopify App Bridge模式
-    const createAuthenticatedFetch = (): typeof fetch => {
+    // 使用useMemo缓存fetch函数，避免重新创建
+    const authenticatedFetch = useMemo(() => {
         if (isCustomApp) {
-            console.log('Custom app mode detected - using standard fetch');
+            // 移除频繁的日志打印，只在开发环境打印一次
+            if (process.env.NODE_ENV === 'development') {
+                console.log('Custom app mode detected - using standard fetch');
+            }
             return createCustomAppFetch();
         } else {
-            console.log('OAuth app mode - using standard fetch with session handling');
+            if (process.env.NODE_ENV === 'development') {
+                console.log('OAuth app mode - using standard fetch with session handling');
+            }
             // 对于OAuth应用，使用标准fetch，让服务器端处理认证
             return async (input: RequestInfo | URL, init?: RequestInit) => {
                 const headers = {
@@ -101,9 +106,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
                 });
             };
         }
-    };
-
-    const authenticatedFetch = createAuthenticatedFetch();
+    }, [isCustomApp]); // 依赖于isCustomApp，但它是一个ref的current值，不会改变
 
     const [state, setState] = useState<AppState>({
         user: null,
@@ -115,7 +118,7 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
     });
 
     // 检查Shopify会话状态
-    const checkShopifySession = async () => {
+    const checkShopifySession = useCallback(async () => {
         try {
             const response = await authenticatedFetch('/auth/session');
             if (response.ok) {
@@ -133,13 +136,14 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
             console.error('检查Shopify会话失败:', error);
         }
         return false;
-    };
+    }, [authenticatedFetch]);
 
     // 初始化用户状态
     const initialized = useRef(false);
 
     useEffect(() => {
         if (initialized.current) return;
+        initialized.current = true;
 
         const initializeAuth = async () => {
             try {
@@ -147,7 +151,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
 
                 if (isCustomApp) {
                     // 自定义应用模式：直接设置为已认证状态
-                    console.log('Custom app mode - setting authenticated state');
                     const windowConfig = (window as any).shopifyConfig || {};
                     const shop = windowConfig.shop || new URLSearchParams(window.location.search).get('shop') || '';
 
@@ -167,7 +170,6 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
                         },
                         isLoading: false
                     }));
-                    initialized.current = true;
                     return;
                 }
 
@@ -200,20 +202,17 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
                 } else {
                     setState(prev => ({ ...prev, isLoading: false }));
                 }
-
-                initialized.current = true;
             } catch (error) {
                 console.error('初始化认证失败:', error);
                 setState(prev => ({ ...prev, isLoading: false }));
-                initialized.current = true;
             }
         };
 
         initializeAuth();
-    }, []); // 空依赖数组，只在组件挂载时执行一次
+    }, [isCustomApp, authenticatedFetch, checkShopifySession]);
 
     // 定义操作函数
-    const actions: AppActions = {
+    const actions: AppActions = useMemo(() => ({
         login: (user: User) => {
             localStorage.setItem('user', JSON.stringify(user));
             setState(prev => ({
@@ -278,13 +277,13 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children }) => {
                 isAuthenticated: !!session,
             }));
         },
-    };
+    }), [isCustomApp, authenticatedFetch]);
 
-    const contextValue: AppContextType = {
+    const contextValue: AppContextType = useMemo(() => ({
         state,
         actions,
-        fetch: authenticatedFetch, // 提供认证后的fetch函数
-    };
+        fetch: authenticatedFetch,
+    }), [state, actions, authenticatedFetch]);
 
     return (
         <AppContext.Provider value={contextValue}>

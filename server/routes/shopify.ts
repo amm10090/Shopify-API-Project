@@ -20,7 +20,7 @@ router.use(verifyShopifySession);
  */
 router.post('/import', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const { productIds } = req.body;
+        const { productIds, useProductSetSync = false } = req.body;
 
         if (!productIds || !Array.isArray(productIds)) {
             res.status(400).json({
@@ -56,7 +56,7 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
             return;
         }
 
-        logger.info(`Starting bulk import for shop: ${session.shop}, products: ${productIds.length}`);
+        logger.info(`Starting bulk import for shop: ${session.shop}, products: ${productIds.length}, useProductSetSync: ${useProductSetSync}`);
 
         for (const productId of productIds) {
             try {
@@ -103,31 +103,41 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
                     sku: product.sku || undefined
                 };
 
-                // 检查是否已存在于Shopify
+                // 使用productSet同步方法或标准方法导入产品
                 let shopifyProduct;
-                if (product.shopifyProductId) {
-                    // 更新现有产品
-                    shopifyProduct = await shopifyService.updateProduct(
+                if (useProductSetSync) {
+                    // 使用新的产品模型的productSet同步方法
+                    shopifyProduct = await shopifyService.syncProductWithProductSet(
                         session,
-                        product.shopifyProductId,
-                        unifiedProduct
+                        unifiedProduct,
+                        'draft'
                     );
                 } else {
-                    // 检查SKU是否已存在 - 智能选择API类型
-                    const existingProduct = await shopifyService.getProductBySku(session, product.sku!);
-                    if (existingProduct) {
+                    // 检查是否已存在于Shopify
+                    if (product.shopifyProductId) {
+                        // 更新现有产品
                         shopifyProduct = await shopifyService.updateProduct(
                             session,
-                            existingProduct.id,
+                            product.shopifyProductId,
                             unifiedProduct
                         );
                     } else {
-                        // 创建新产品 - 智能选择API类型
-                        shopifyProduct = await shopifyService.createProduct(
-                            session,
-                            unifiedProduct,
-                            'draft'
-                        );
+                        // 检查SKU是否已存在 - 智能选择API类型
+                        const existingProduct = await shopifyService.getProductBySku(session, product.sku!);
+                        if (existingProduct) {
+                            shopifyProduct = await shopifyService.updateProduct(
+                                session,
+                                existingProduct.id,
+                                unifiedProduct
+                            );
+                        } else {
+                            // 创建新产品 - 智能选择API类型
+                            shopifyProduct = await shopifyService.createProduct(
+                                session,
+                                unifiedProduct,
+                                'draft'
+                            );
+                        }
                     }
                 }
 
@@ -151,15 +161,17 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
                         );
                     }
 
-                    // 设置联盟链接元字段
-                    await shopifyService.setProductMetafield(
-                        session,
-                        String(shopifyProduct.id),
-                        'custom',
-                        'affiliate_link',
-                        product.affiliateUrl,
-                        'url'
-                    );
+                    // 设置联盟链接元字段（如果还没有设置）
+                    if (!useProductSetSync) {
+                        await shopifyService.setProductMetafield(
+                            session,
+                            String(shopifyProduct.id),
+                            'custom',
+                            'affiliate_link',
+                            product.affiliateUrl,
+                            'url'
+                        );
+                    }
 
                     // 更新数据库中的产品状态
                     await prisma.product.update({
@@ -674,7 +686,7 @@ router.post('/update', async (req: Request, res: Response, next: NextFunction) =
                                     sku: existingProduct.sku || undefined
                                 };
 
-                                const newShopifyProduct = await shopifyService.createProduct(session, unifiedProductForCreation, 'active');
+                                const newShopifyProduct = await shopifyService.createProduct(session, unifiedProductForCreation, 'draft');
 
                                 // 更新数据库中的新 shopifyProductId
                                 await prisma.product.update({

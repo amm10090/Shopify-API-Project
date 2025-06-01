@@ -220,6 +220,19 @@ POST /api/webhook-management/repair
 
 ## 🚨 常见问题排查
 
+### 产品导入状态修复
+
+#### 问题症状
+通过应用导入产品时，产品默认被设置为活跃状态(active)而不是草稿状态(draft)。
+
+#### 解决方法
+修复了产品导入时的状态设置问题：
+1. 确保`ShopifyService.createProduct`方法默认使用`draft`状态
+2. 修复了在重新创建产品时错误使用`active`状态的问题
+3. 添加状态参数验证，确保始终使用有效的状态值
+
+这个修复确保所有新导入的产品都会默认为草稿状态，让商家有机会在产品发布前进行审核和修改。
+
 ### API弃用警告解决方案
 
 #### 问题症状
@@ -247,6 +260,65 @@ PM2日志中出现大量 `[shopify-api/WARNING] API Deprecation Notice` 警告�
    pm2 restart shopify-api-project
    ```
 
+### Shopify API 2024-07版本兼容性
+
+本项目已更新至支持Shopify API 2024-07版本，包含以下重要改进：
+
+1. **新ProductSet同步方法**：利用Shopify新产品模型API进行产品同步，提高同步成功率
+   ```env
+   # 在导入时启用ProductSet同步
+   SHOPIFY_USE_PRODUCT_SET_SYNC=true
+   ```
+
+2. **元字段(Metafields)替代SKU**：由于新API不再在ProductVariantInput中支持SKU字段，我们现在使用元字段存储SKU信息
+
+3. **改进的变体和选项处理**：更新了变体创建和选项处理逻辑，符合新API要求
+
+4. **元字段API更新**：从2024-07版本开始，`metafieldSet`突变已被替换为`metafieldsSet`，支持批量设置元字段，提高效率和性能
+
+5. **使用方法**：
+   在产品导入API调用中，添加`useProductSetSync: true`参数来启用新的同步方法：
+   ```json
+   {
+     "productIds": ["id1", "id2"],
+     "useProductSetSync": true
+   }
+   ```
+
+6. **兼容性**：应用保持向后兼容，如无需使用新特性，可继续使用原有导入方法
+
+### GraphQL产品创建错误修复
+
+#### 问题症状
+在产品导入过程中出现如下GraphQL错误：
+
+```
+ProductCreateInput isn't a defined input type (on $product)
+```
+
+```
+Variable $variants of type [ProductVariantsBulkInput!]! was provided invalid value for 0.sku (Field is not defined on ProductVariantsBulkInput)
+```
+
+#### 原因
+Shopify Admin API的GraphQL模式需要做两处修正：
+1. 主产品创建使用 `input: $input` 而不是 `product: $product`，且输入类型应为 `ProductInput` 而非 `ProductCreateInput`
+2. 变体更新需使用 `productVariantUpdate` 而非 `productVariantsBulkUpdate`，因为批量更新的输入类型 `ProductVariantsBulkInput` 不支持 `sku` 字段
+
+#### 解决方法
+已更新 `ShopifyService.ts` 中的两个关键方法：
+
+**createProductWithGraphQL 方法**：
+- 将 `mutation productCreate($product: ProductCreateInput!, ...)` 更正为 `mutation productCreate($input: ProductInput!, ...)`
+- 将 `productCreate(product: $product, ...)` 更正为 `productCreate(input: $input, ...)`
+- 变量传递时使用 `{ input: productInput }` 而非 `{ product: productInput }`
+
+**updateDefaultVariantGraphQL 方法**：
+- 使用 `productVariantUpdate` 单个变体更新而不是 `productVariantsBulkUpdate` 批量更新
+- 正确构建 `input` 对象包含 `id`、`price`、`compareAtPrice` 和 `sku` 字段
+
+> 此修复已应用于版本2.3.2及以上。
+
 #### 🔧 技术实现亮点
 
 **智能API架构**
@@ -255,11 +327,12 @@ PM2日志中出现大量 `[shopify-api/WARNING] API Deprecation Notice` 警告�
 - **自动故障恢复**：GraphQL失败时自动降级到REST API
 
 **遵循Shopify最佳实践**
-- ✅ **现代化Mutations**：使用`productCreate`和`productCreateMedia`
-- ✅ **统一输入结构**：标准的`ProductInput`和`CreateMediaInput`
+- ✅ **现代化Mutations**：使用`productCreate`、`productVariantUpdate`和`productCreateMedia`
+- ✅ **正确的输入结构**：`ProductInput`用于产品创建，`ProductVariantInput`用于变体更新
+- ✅ **分离的变体更新**：通过单独调用`productVariantUpdate`处理SKU和价格更新
 - ✅ **Global ID使用**：`gid://shopify/Product/123`格式
-- ✅ **完整错误处理**：`userErrors`和`mediaUserErrors`标准化处理
-- ✅ **变量和类型安全**：正确的GraphQL变量传递
+- ✅ **完整错误处理**：所有操作都有专用的`userErrors`处理
+- ✅ **变量和类型安全**：遵循最新的Shopify GraphQL schema类型定义
 
 **图片处理优化**
 - **现代Media API**：使用`productCreateMedia`替代弃用的REST图片API

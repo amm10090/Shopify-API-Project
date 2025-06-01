@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
     Page,
     Layout,
@@ -25,6 +25,7 @@ import {
     Tooltip,
     ProgressBar,
     Banner,
+    UnstyledButton,
 } from '@shopify/polaris';
 import {
     ImportIcon,
@@ -65,6 +66,17 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
     const [deleteModalActive, setDeleteModalActive] = useState(false);
     const [importProgress, setImportProgress] = useState<{ [key: string]: boolean }>({});
 
+    // 添加请求标记，防止重复请求
+    const isFetchingStats = useRef(false);
+
+    // 统计信息 state - 只定义一次
+    const [stats, setStats] = useState({
+        total: 0,
+        imported: 0,
+        pending: 0,
+        inStock: 0
+    });
+
     // Product detail modal state
     const [detailModalActive, setDetailModalActive] = useState(false);
     const [selectedProduct, setSelectedProduct] = useState<UnifiedProduct | null>(null);
@@ -90,19 +102,17 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
 
     // 获取产品列表
     const fetchProducts = useCallback(async () => {
+        setLoading(true);
+        setIsLoading(true);
         try {
-            setLoading(true);
-            const params: any = {
+            const response = await productApi.getProducts({
                 page: currentPage,
-                limit,
-            };
-
-            if (brandFilter) params.brandId = brandFilter;
-            if (statusFilter) params.importStatus = statusFilter;
-            if (availabilityFilter) params.availability = availabilityFilter === 'true';
-            if (searchValue) params.search = searchValue;
-
-            const response = await productApi.getProducts(params);
+                limit: limit,
+                importStatus: statusFilter || undefined,
+                availability: availabilityFilter ? availabilityFilter === 'true' : undefined,
+                search: searchValue || undefined,
+                brandId: brandFilter || undefined,
+            });
 
             if (response.data) {
                 setProducts(response.data);
@@ -119,8 +129,46 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
             setProducts([]);
         } finally {
             setLoading(false);
+            setIsLoading(false);
         }
-    }, [currentPage, brandFilter, statusFilter, availabilityFilter, searchValue, showToast]);
+    }, [currentPage, limit, statusFilter, availabilityFilter, searchValue, brandFilter, showToast, setIsLoading]);
+
+    // 获取产品统计数据 - 使用ref防止重复请求
+    const fetchProductStats = useCallback(async () => {
+        // 如果已经在获取统计数据，则跳过
+        if (isFetchingStats.current) return;
+
+        isFetchingStats.current = true;
+        try {
+            // 使用多个接口调用获取不同状态的产品数量
+            const [totalResponse, importedResponse, pendingResponse, inStockResponse] = await Promise.all([
+                // 获取总产品数
+                productApi.getProducts({ page: 1, limit: 1 }),
+                // 获取已导入产品数
+                productApi.getProducts({ page: 1, limit: 1, importStatus: 'imported' }),
+                // 获取待处理产品数
+                productApi.getProducts({ page: 1, limit: 1, importStatus: 'pending' }),
+                // 获取有库存产品数
+                productApi.getProducts({ page: 1, limit: 1, availability: true })
+            ]);
+
+            setStats({
+                total: totalResponse.pagination?.total || 0,
+                imported: importedResponse.pagination?.total || 0,
+                pending: pendingResponse.pagination?.total || 0,
+                inStock: inStockResponse.pagination?.total || 0
+            });
+        } catch (error) {
+            console.error('Error fetching product stats:', error);
+            // 使用简单设置而不是依赖前一个状态
+            setStats(prev => ({
+                ...prev,
+                total: totalProducts
+            }));
+        } finally {
+            isFetchingStats.current = false;
+        }
+    }, [totalProducts]);
 
     // 组件挂载时获取数据
     useEffect(() => {
@@ -132,6 +180,14 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
     useEffect(() => {
         fetchProducts();
     }, [fetchProducts]);
+
+    // 获取统计数据 - 只在组件挂载时和筛选条件改变后调用一次
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            fetchProductStats();
+        }, 300); // 添加延时避免频繁调用
+        return () => clearTimeout(timer);
+    }, [fetchProductStats, currentPage, statusFilter, availabilityFilter, searchValue, brandFilter]);
 
     const handleSelectionChange = useCallback((selection: string[]) => {
         setSelectedProducts(selection);
@@ -474,6 +530,18 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
         setCurrentPage(1);
     }, [brandFilter, statusFilter, availabilityFilter, searchValue]);
 
+    // 卡片点击处理函数
+    const handleFilterCardClick = useCallback((newStatusFilter: string, newAvailabilityFilter: string) => {
+        // 设置筛选条件
+        setStatusFilter(newStatusFilter);
+        setAvailabilityFilter(newAvailabilityFilter);
+        setBrandFilter('');  // 清除品牌筛选
+        setSearchValue('');  // 清除搜索条件
+        setCurrentPage(1);   // 重置页码
+
+        // 不需要额外触发fetchProducts，因为状态更新会自动触发useEffect
+    }, []);
+
     if (loading && products.length === 0) {
         return (
             <Page fullWidth title="Product Management">
@@ -508,6 +576,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
             );
         }
 
+        // 简化关键词显示逻辑，避免使用不必要的Tooltip
         return (
             <div style={{
                 display: 'flex',
@@ -517,23 +586,19 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                 maxWidth: '100%',
                 overflow: 'hidden'
             }}>
-                {keywords.slice(0, 4).map((keyword, index) => (
+                {keywords.slice(0, 3).map((keyword, index) => (
                     <Badge key={index} tone="info" size="small">
-                        {keyword.length > 15 ? `${keyword.substring(0, 15)}...` : keyword}
+                        {keyword.length > 12 ? `${keyword.substring(0, 12)}...` : keyword}
                     </Badge>
                 ))}
-                {keywords.length > 4 && (
-                    <Tooltip content={`Additional keywords: ${keywords.slice(4).join(', ')}`}>
-                        <Badge tone="info" size="small">
-                            {`+${keywords.length - 4}`}
-                        </Badge>
-                    </Tooltip>
+                {keywords.length > 3 && (
+                    <Badge tone="info" size="small">
+                        {`+${keywords.length - 3}`}
+                    </Badge>
                 )}
             </div>
         );
     };
-
-
 
     const brandOptions = [
         { label: 'All Brands', value: '' },
@@ -613,20 +678,6 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
         onRemove: () => setAvailabilityFilter('')
     });
 
-
-
-    // 统计信息
-    const getProductStats = () => {
-        const imported = products.filter(p => p.importStatus === 'imported').length;
-        const pending = products.filter(p => p.importStatus === 'pending').length;
-        const failed = products.filter(p => p.importStatus === 'failed').length;
-        const inStock = products.filter(p => p.availability).length;
-
-        return { imported, pending, failed, inStock };
-    };
-
-    const stats = getProductStats();
-
     // 检查是否有任何筛选条件被应用
     const hasActiveFilters = searchValue || brandFilter || statusFilter || availabilityFilter;
 
@@ -688,62 +739,94 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
                         <Card>
                             <Box padding="400">
-                                <BlockStack gap="300">
-                                    <InlineStack align="space-between">
-                                        <Text as="h3" variant="headingSm" tone="subdued">
-                                            Total Products
+                                <UnstyledButton
+                                    onClick={() => handleFilterCardClick('', '')}
+                                    style={{ width: '100%', cursor: 'pointer' }}
+                                >
+                                    <BlockStack gap="300">
+                                        <InlineStack align="space-between">
+                                            <Text as="h3" variant="headingSm" tone="subdued">
+                                                Total Products
+                                            </Text>
+                                            <Icon source={ProductIcon} />
+                                        </InlineStack>
+                                        <Text as="p" variant="heading2xl" fontWeight="bold">
+                                            {stats.total}
                                         </Text>
-                                        <Icon source={ProductIcon} tone="base" />
-                                    </InlineStack>
-                                    <Text as="p" variant="heading2xl" fontWeight="bold">
-                                        {totalProducts.toLocaleString()}
-                                    </Text>
-                                </BlockStack>
+                                        <Text as="p" variant="bodySm" tone="subdued">
+                                            Click to view all products
+                                        </Text>
+                                    </BlockStack>
+                                </UnstyledButton>
                             </Box>
                         </Card>
                         <Card>
                             <Box padding="400">
-                                <BlockStack gap="300">
-                                    <InlineStack align="space-between">
-                                        <Text as="h3" variant="headingSm" tone="subdued">
-                                            Imported
+                                <UnstyledButton
+                                    onClick={() => handleFilterCardClick('imported', '')}
+                                    style={{ width: '100%', cursor: 'pointer' }}
+                                >
+                                    <BlockStack gap="300">
+                                        <InlineStack align="space-between">
+                                            <Text as="h3" variant="headingSm" tone="subdued">
+                                                Imported
+                                            </Text>
+                                            <Icon source={ImportIcon} tone="success" />
+                                        </InlineStack>
+                                        <Text as="p" variant="heading2xl" fontWeight="bold" tone="success">
+                                            {stats.imported}
                                         </Text>
-                                        <Icon source={ImportIcon} tone="success" />
-                                    </InlineStack>
-                                    <Text as="p" variant="heading2xl" fontWeight="bold" tone="success">
-                                        {stats.imported}
-                                    </Text>
-                                </BlockStack>
+                                        <Text as="p" variant="bodySm" tone="subdued">
+                                            Click to view imported products
+                                        </Text>
+                                    </BlockStack>
+                                </UnstyledButton>
                             </Box>
                         </Card>
                         <Card>
                             <Box padding="400">
-                                <BlockStack gap="300">
-                                    <InlineStack align="space-between">
-                                        <Text as="h3" variant="headingSm" tone="subdued">
-                                            Pending
+                                <UnstyledButton
+                                    onClick={() => handleFilterCardClick('pending', '')}
+                                    style={{ width: '100%', cursor: 'pointer' }}
+                                >
+                                    <BlockStack gap="300">
+                                        <InlineStack align="space-between">
+                                            <Text as="h3" variant="headingSm" tone="subdued">
+                                                Pending
+                                            </Text>
+                                            <Icon source={CalendarIcon} tone="warning" />
+                                        </InlineStack>
+                                        <Text as="p" variant="heading2xl" fontWeight="bold" tone="caution">
+                                            {stats.pending}
                                         </Text>
-                                        <Icon source={CalendarIcon} tone="warning" />
-                                    </InlineStack>
-                                    <Text as="p" variant="heading2xl" fontWeight="bold" tone="caution">
-                                        {stats.pending}
-                                    </Text>
-                                </BlockStack>
+                                        <Text as="p" variant="bodySm" tone="subdued">
+                                            Click to view pending products
+                                        </Text>
+                                    </BlockStack>
+                                </UnstyledButton>
                             </Box>
                         </Card>
                         <Card>
                             <Box padding="400">
-                                <BlockStack gap="300">
-                                    <InlineStack align="space-between">
-                                        <Text as="h3" variant="headingSm" tone="subdued">
-                                            In Stock
+                                <UnstyledButton
+                                    onClick={() => handleFilterCardClick('', 'true')}
+                                    style={{ width: '100%', cursor: 'pointer' }}
+                                >
+                                    <BlockStack gap="300">
+                                        <InlineStack align="space-between">
+                                            <Text as="h3" variant="headingSm" tone="subdued">
+                                                In Stock
+                                            </Text>
+                                            <Icon source={InventoryIcon} tone="success" />
+                                        </InlineStack>
+                                        <Text as="p" variant="heading2xl" fontWeight="bold" tone="success">
+                                            {stats.inStock}
                                         </Text>
-                                        <Icon source={InventoryIcon} tone="success" />
-                                    </InlineStack>
-                                    <Text as="p" variant="heading2xl" fontWeight="bold" tone="success">
-                                        {stats.inStock}
-                                    </Text>
-                                </BlockStack>
+                                        <Text as="p" variant="bodySm" tone="subdued">
+                                            Click to view in stock products
+                                        </Text>
+                                    </BlockStack>
+                                </UnstyledButton>
                             </Box>
                         </Card>
                     </div>
@@ -1021,36 +1104,33 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                                                 justifyContent: 'center',
                                                                 flexWrap: 'wrap'
                                                             }}>
-                                                                <Tooltip content="View details">
-                                                                    <Button
-                                                                        size="slim"
-                                                                        icon={ViewIcon}
-                                                                        variant="tertiary"
-                                                                        onClick={() => {
-                                                                            setSelectedProduct(product);
-                                                                            setDetailModalActive(true);
-                                                                        }}
-                                                                    />
-                                                                </Tooltip>
-                                                                <Tooltip content="Edit product">
-                                                                    <Button
-                                                                        size="slim"
-                                                                        icon={EditIcon}
-                                                                        variant="tertiary"
-                                                                        onClick={() => handleProductEdit(product)}
-                                                                    />
-                                                                </Tooltip>
+                                                                <Button
+                                                                    size="slim"
+                                                                    icon={ViewIcon}
+                                                                    variant="tertiary"
+                                                                    onClick={() => {
+                                                                        setSelectedProduct(product);
+                                                                        setDetailModalActive(true);
+                                                                    }}
+                                                                    accessibilityLabel="View details"
+                                                                />
+                                                                <Button
+                                                                    size="slim"
+                                                                    icon={EditIcon}
+                                                                    variant="tertiary"
+                                                                    onClick={() => handleProductEdit(product)}
+                                                                    accessibilityLabel="Edit product"
+                                                                />
 
                                                                 {/* 数据库更新按钮 - 对所有商品都显示 */}
-                                                                <Tooltip content="Update product data from source API">
-                                                                    <Button
-                                                                        size="slim"
-                                                                        icon={RefreshIcon}
-                                                                        variant="tertiary"
-                                                                        loading={importProgress[product.id]}
-                                                                        onClick={() => handleDatabaseUpdate(product.id)}
-                                                                    />
-                                                                </Tooltip>
+                                                                <Button
+                                                                    size="slim"
+                                                                    icon={RefreshIcon}
+                                                                    variant="tertiary"
+                                                                    loading={importProgress[product.id]}
+                                                                    onClick={() => handleDatabaseUpdate(product.id)}
+                                                                    accessibilityLabel="Update product data from source API"
+                                                                />
 
                                                                 {/* Shopify相关操作按钮 */}
                                                                 {product.importStatus === 'pending' && (
@@ -1148,15 +1228,15 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
             <Modal
                 open={deleteModalActive}
                 onClose={() => setDeleteModalActive(false)}
-                title="Confirm Deletion"
+                title="确认删除 / Confirm Deletion"
                 primaryAction={{
-                    content: 'Delete Products',
+                    content: '删除产品 / Delete Products',
                     destructive: true,
                     onAction: handleBulkDelete,
                 }}
                 secondaryActions={[
                     {
-                        content: 'Cancel',
+                        content: '取消 / Cancel',
                         onAction: () => setDeleteModalActive(false),
                     },
                 ]}
@@ -1164,10 +1244,60 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                 <Modal.Section>
                     <BlockStack gap="400">
                         <Text as="p" variant="bodyMd">
+                            确定要删除选中的 {selectedProducts.length} 个产品吗？
+                        </Text>
+                        <Text as="p" variant="bodyMd">
                             Are you sure you want to delete the selected {selectedProducts.length} product{selectedProducts.length > 1 ? 's' : ''}?
                         </Text>
+
+                        {/* 产品状态统计 */}
+                        {selectedProducts.length > 0 && (
+                            <Box
+                                padding="400"
+                                background="bg-surface-secondary"
+                                borderRadius="200"
+                            >
+                                <BlockStack gap="300">
+                                    <Text as="h3" variant="headingSm">
+                                        产品状态统计 / Selected Products Status
+                                    </Text>
+                                    <InlineStack gap="400" wrap={false}>
+                                        <Box background="bg-surface" padding="300" borderRadius="200" borderColor="border" borderWidth="025">
+                                            <BlockStack gap="100" align="center">
+                                                <Text as="span" variant="bodySm" tone="subdued">已导入 / Imported</Text>
+                                                <Text as="p" variant="headingLg" fontWeight="bold" tone="success">
+                                                    {products.filter(p => selectedProducts.includes(p.id) && p.importStatus === 'imported').length}
+                                                </Text>
+                                            </BlockStack>
+                                        </Box>
+                                        <Box background="bg-surface" padding="300" borderRadius="200" borderColor="border" borderWidth="025">
+                                            <BlockStack gap="100" align="center">
+                                                <Text as="span" variant="bodySm" tone="subdued">待处理 / Pending</Text>
+                                                <Text as="p" variant="headingLg" fontWeight="bold" tone="caution">
+                                                    {products.filter(p => selectedProducts.includes(p.id) && p.importStatus === 'pending').length}
+                                                </Text>
+                                            </BlockStack>
+                                        </Box>
+                                        <Box background="bg-surface" padding="300" borderRadius="200" borderColor="border" borderWidth="025">
+                                            <BlockStack gap="100" align="center">
+                                                <Text as="span" variant="bodySm" tone="subdued">库存中 / In Stock</Text>
+                                                <Text as="p" variant="headingLg" fontWeight="bold" tone="success">
+                                                    {products.filter(p => selectedProducts.includes(p.id) && p.availability).length}
+                                                </Text>
+                                            </BlockStack>
+                                        </Box>
+                                    </InlineStack>
+                                </BlockStack>
+                            </Box>
+                        )}
+
                         <Banner tone="critical">
-                            <p><strong>Warning:</strong> This action cannot be undone. All product data will be permanently removed.</p>
+                            <p><strong>警告 / Warning:</strong> 此操作无法撤消。所有产品数据将被永久删除。<br />
+                                This action cannot be undone. All product data will be permanently removed.</p>
+
+                            {products.filter(p => selectedProducts.includes(p.id) && p.importStatus === 'imported').length > 0 && (
+                                <p style={{ marginTop: '8px' }}><strong>注意 / Note:</strong> 您选择的产品中包含已导入到Shopify的产品。删除这些产品将不会从Shopify商店中删除它们，仅从此应用中删除。</p>
+                            )}
                         </Banner>
                     </BlockStack>
                 </Modal.Section>
