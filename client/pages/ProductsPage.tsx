@@ -51,6 +51,32 @@ interface ProductsPageProps {
     setIsLoading: (loading: boolean) => void;
 }
 
+// 添加脉动动画的CSS
+const pulseAnimation = `
+    @keyframes pulse {
+        0% {
+            opacity: 0.6;
+        }
+        50% {
+            opacity: 1;
+        }
+        100% {
+            opacity: 0.6;
+        }
+    }
+`;
+
+// 将动画样式注入到头部
+const injectPulseAnimationStyle = () => {
+    // 检查是否已经存在
+    if (!document.getElementById('pulse-animation-style')) {
+        const styleElement = document.createElement('style');
+        styleElement.id = 'pulse-animation-style';
+        styleElement.innerHTML = pulseAnimation;
+        document.head.appendChild(styleElement);
+    }
+};
+
 const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) => {
     const [products, setProducts] = useState<UnifiedProduct[]>([]);
     const [brands, setBrands] = useState<Brand[]>([]);
@@ -188,6 +214,18 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
         }, 300); // 添加延时避免频繁调用
         return () => clearTimeout(timer);
     }, [fetchProductStats, currentPage, statusFilter, availabilityFilter, searchValue, brandFilter]);
+
+    // 组件挂载时注入动画样式
+    useEffect(() => {
+        injectPulseAnimationStyle();
+        return () => {
+            // 组件卸载时移除样式
+            const styleElement = document.getElementById('pulse-animation-style');
+            if (styleElement) {
+                styleElement.remove();
+            }
+        };
+    }, []);
 
     const handleSelectionChange = useCallback((selection: string[]) => {
         setSelectedProducts(selection);
@@ -737,97 +775,421 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                 {/* 统计卡片 */}
                 <Layout.Section>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
-                        <Card>
-                            <Box padding="400">
-                                <UnstyledButton
-                                    onClick={() => handleFilterCardClick('', '')}
-                                    style={{ width: '100%', cursor: 'pointer' }}
-                                >
-                                    <BlockStack gap="300">
-                                        <InlineStack align="space-between">
-                                            <Text as="h3" variant="headingSm" tone="subdued">
-                                                Total Products
-                                            </Text>
+                        <Card padding="0">
+                            <div
+                                style={{
+                                    padding: '16px',
+                                    transition: 'all 0.3s ease',
+                                    cursor: 'pointer',
+                                    borderRadius: '8px',
+                                    height: '100%',
+                                    boxShadow: '0 0 0 1px rgba(63, 63, 68, 0.05), 0 1px 3px 0 rgba(63, 63, 68, 0.15)',
+                                    position: 'relative',
+                                    overflow: 'hidden'
+                                }}
+                                onClick={() => handleFilterCardClick('', '')}
+                                onMouseOver={(e: React.MouseEvent<HTMLDivElement>) => {
+                                    const target = e.currentTarget;
+                                    target.style.backgroundColor = '#F4F6F8';
+                                    target.style.transform = 'translateY(-2px)';
+                                    target.style.boxShadow = '0 0 0 1px rgba(63, 63, 68, 0.05), 0 4px 7px 0 rgba(63, 63, 68, 0.15)';
+
+                                    // 添加波纹效果的元素
+                                    const icon = target.querySelector('.card-icon') as HTMLElement;
+                                    if (icon) {
+                                        icon.style.transform = 'scale(1.2) rotate(10deg)';
+                                    }
+
+                                    // 显示交互提示
+                                    const hint = target.querySelector('.interaction-hint') as HTMLElement;
+                                    if (hint) {
+                                        hint.style.opacity = '1';
+                                    }
+                                }}
+                                onMouseOut={(e: React.MouseEvent<HTMLDivElement>) => {
+                                    const target = e.currentTarget;
+                                    target.style.backgroundColor = '';
+                                    target.style.transform = 'translateY(0)';
+                                    target.style.boxShadow = '0 0 0 1px rgba(63, 63, 68, 0.05), 0 1px 3px 0 rgba(63, 63, 68, 0.15)';
+
+                                    // 恢复图标
+                                    const icon = target.querySelector('.card-icon') as HTMLElement;
+                                    if (icon) {
+                                        icon.style.transform = '';
+                                    }
+
+                                    // 隐藏交互提示
+                                    const hint = target.querySelector('.interaction-hint') as HTMLElement;
+                                    if (hint) {
+                                        hint.style.opacity = '0';
+                                    }
+                                }}
+                            >
+                                {/* 波纹动画效果 - 绝对定位在卡片后面 */}
+                                <div className="ripple-background" style={{
+                                    position: 'absolute',
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    background: 'radial-gradient(circle, transparent 1%, #F4F6F8 1%) center/15000%',
+                                    opacity: 0.8,
+                                    transform: 'translate3d(0,0,0)',
+                                }}></div>
+
+                                <BlockStack gap="300">
+                                    <InlineStack align="space-between">
+                                        <Text as="h3" variant="headingSm" tone="subdued">
+                                            Total Products
+                                        </Text>
+                                        <div className="card-icon" style={{
+                                            transition: 'transform 0.3s ease'
+                                        }}>
                                             <Icon source={ProductIcon} />
-                                        </InlineStack>
-                                        <Text as="p" variant="heading2xl" fontWeight="bold">
-                                            {stats.total}
-                                        </Text>
+                                        </div>
+                                    </InlineStack>
+                                    <Text as="p" variant="heading2xl" fontWeight="bold">
+                                        {stats.total}
+                                    </Text>
+                                    <InlineStack align="space-between">
                                         <Text as="p" variant="bodySm" tone="subdued">
-                                            Click to view all products
+                                            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                Click to view all products
+                                                <Icon source={ViewIcon} tone="subdued" />
+                                            </span>
                                         </Text>
-                                    </BlockStack>
-                                </UnstyledButton>
-                            </Box>
+                                        {/* 交互提示指示器 */}
+                                        <div className="interaction-hint" style={{
+                                            background: 'rgba(0, 110, 255, 0.1)',
+                                            color: '#006EFF',
+                                            padding: '2px 8px',
+                                            borderRadius: '12px',
+                                            fontSize: '12px',
+                                            fontWeight: 500,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '4px',
+                                            opacity: 0,
+                                            transition: 'opacity 0.3s ease',
+                                            animation: 'pulse 1.5s infinite'
+                                        }}>
+                                            <span>Click</span>
+                                        </div>
+                                    </InlineStack>
+                                </BlockStack>
+                            </div>
                         </Card>
-                        <Card>
-                            <Box padding="400">
-                                <UnstyledButton
-                                    onClick={() => handleFilterCardClick('imported', '')}
-                                    style={{ width: '100%', cursor: 'pointer' }}
-                                >
-                                    <BlockStack gap="300">
-                                        <InlineStack align="space-between">
-                                            <Text as="h3" variant="headingSm" tone="subdued">
-                                                Imported
-                                            </Text>
+                        <Card padding="0">
+                            <div
+                                style={{
+                                    padding: '16px',
+                                    transition: 'all 0.3s ease',
+                                    cursor: 'pointer',
+                                    borderRadius: '8px',
+                                    height: '100%',
+                                    boxShadow: '0 0 0 1px rgba(63, 63, 68, 0.05), 0 1px 3px 0 rgba(63, 63, 68, 0.15)',
+                                    position: 'relative',
+                                    overflow: 'hidden'
+                                }}
+                                onClick={() => handleFilterCardClick('imported', '')}
+                                onMouseOver={(e: React.MouseEvent<HTMLDivElement>) => {
+                                    const target = e.currentTarget;
+                                    target.style.backgroundColor = '#F1F8F5';
+                                    target.style.transform = 'translateY(-2px)';
+                                    target.style.boxShadow = '0 0 0 1px rgba(63, 63, 68, 0.05), 0 4px 7px 0 rgba(63, 63, 68, 0.15)';
+
+                                    // 添加波纹效果的元素
+                                    const icon = target.querySelector('.card-icon') as HTMLElement;
+                                    if (icon) {
+                                        icon.style.transform = 'scale(1.2) rotate(10deg)';
+                                    }
+
+                                    // 显示交互提示
+                                    const hint = target.querySelector('.interaction-hint') as HTMLElement;
+                                    if (hint) {
+                                        hint.style.opacity = '1';
+                                    }
+                                }}
+                                onMouseOut={(e: React.MouseEvent<HTMLDivElement>) => {
+                                    const target = e.currentTarget;
+                                    target.style.backgroundColor = '';
+                                    target.style.transform = 'translateY(0)';
+                                    target.style.boxShadow = '0 0 0 1px rgba(63, 63, 68, 0.05), 0 1px 3px 0 rgba(63, 63, 68, 0.15)';
+
+                                    // 恢复图标
+                                    const icon = target.querySelector('.card-icon') as HTMLElement;
+                                    if (icon) {
+                                        icon.style.transform = '';
+                                    }
+
+                                    // 隐藏交互提示
+                                    const hint = target.querySelector('.interaction-hint') as HTMLElement;
+                                    if (hint) {
+                                        hint.style.opacity = '0';
+                                    }
+                                }}
+                            >
+                                {/* 波纹动画效果 - 绝对定位在卡片后面 */}
+                                <div className="ripple-background" style={{
+                                    position: 'absolute',
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    background: 'radial-gradient(circle, transparent 1%, #F1F8F5 1%) center/15000%',
+                                    opacity: 0.8,
+                                    transform: 'translate3d(0,0,0)',
+                                }}></div>
+
+                                <BlockStack gap="300">
+                                    <InlineStack align="space-between">
+                                        <Text as="h3" variant="headingSm" tone="subdued">
+                                            Imported
+                                        </Text>
+                                        <div className="card-icon" style={{
+                                            transition: 'transform 0.3s ease'
+                                        }}>
                                             <Icon source={ImportIcon} tone="success" />
-                                        </InlineStack>
-                                        <Text as="p" variant="heading2xl" fontWeight="bold" tone="success">
-                                            {stats.imported}
-                                        </Text>
+                                        </div>
+                                    </InlineStack>
+                                    <Text as="p" variant="heading2xl" fontWeight="bold" tone="success">
+                                        {stats.imported}
+                                    </Text>
+                                    <InlineStack align="space-between">
                                         <Text as="p" variant="bodySm" tone="subdued">
-                                            Click to view imported products
+                                            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                Click to view imported products
+                                                <Icon source={ViewIcon} tone="subdued" />
+                                            </span>
                                         </Text>
-                                    </BlockStack>
-                                </UnstyledButton>
-                            </Box>
+                                        {/* 交互提示指示器 */}
+                                        <div className="interaction-hint" style={{
+                                            background: 'rgba(0, 128, 96, 0.1)',
+                                            color: '#008060',
+                                            padding: '2px 8px',
+                                            borderRadius: '12px',
+                                            fontSize: '12px',
+                                            fontWeight: 500,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '4px',
+                                            opacity: 0,
+                                            transition: 'opacity 0.3s ease',
+                                            animation: 'pulse 1.5s infinite'
+                                        }}>
+                                            <span>Click</span>
+                                        </div>
+                                    </InlineStack>
+                                </BlockStack>
+                            </div>
                         </Card>
-                        <Card>
-                            <Box padding="400">
-                                <UnstyledButton
-                                    onClick={() => handleFilterCardClick('pending', '')}
-                                    style={{ width: '100%', cursor: 'pointer' }}
-                                >
-                                    <BlockStack gap="300">
-                                        <InlineStack align="space-between">
-                                            <Text as="h3" variant="headingSm" tone="subdued">
-                                                Pending
-                                            </Text>
+                        <Card padding="0">
+                            <div
+                                style={{
+                                    padding: '16px',
+                                    transition: 'all 0.3s ease',
+                                    cursor: 'pointer',
+                                    borderRadius: '8px',
+                                    height: '100%',
+                                    boxShadow: '0 0 0 1px rgba(63, 63, 68, 0.05), 0 1px 3px 0 rgba(63, 63, 68, 0.15)',
+                                    position: 'relative',
+                                    overflow: 'hidden'
+                                }}
+                                onClick={() => handleFilterCardClick('pending', '')}
+                                onMouseOver={(e: React.MouseEvent<HTMLDivElement>) => {
+                                    const target = e.currentTarget;
+                                    target.style.backgroundColor = '#FDF8E8';
+                                    target.style.transform = 'translateY(-2px)';
+                                    target.style.boxShadow = '0 0 0 1px rgba(63, 63, 68, 0.05), 0 4px 7px 0 rgba(63, 63, 68, 0.15)';
+
+                                    // 添加波纹效果的元素
+                                    const icon = target.querySelector('.card-icon') as HTMLElement;
+                                    if (icon) {
+                                        icon.style.transform = 'scale(1.2) rotate(10deg)';
+                                    }
+
+                                    // 显示交互提示
+                                    const hint = target.querySelector('.interaction-hint') as HTMLElement;
+                                    if (hint) {
+                                        hint.style.opacity = '1';
+                                    }
+                                }}
+                                onMouseOut={(e: React.MouseEvent<HTMLDivElement>) => {
+                                    const target = e.currentTarget;
+                                    target.style.backgroundColor = '';
+                                    target.style.transform = 'translateY(0)';
+                                    target.style.boxShadow = '0 0 0 1px rgba(63, 63, 68, 0.05), 0 1px 3px 0 rgba(63, 63, 68, 0.15)';
+
+                                    // 恢复图标
+                                    const icon = target.querySelector('.card-icon') as HTMLElement;
+                                    if (icon) {
+                                        icon.style.transform = '';
+                                    }
+
+                                    // 隐藏交互提示
+                                    const hint = target.querySelector('.interaction-hint') as HTMLElement;
+                                    if (hint) {
+                                        hint.style.opacity = '0';
+                                    }
+                                }}
+                            >
+                                {/* 波纹动画效果 - 绝对定位在卡片后面 */}
+                                <div className="ripple-background" style={{
+                                    position: 'absolute',
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    background: 'radial-gradient(circle, transparent 1%, #FDF8E8 1%) center/15000%',
+                                    opacity: 0.8,
+                                    transform: 'translate3d(0,0,0)',
+                                }}></div>
+
+                                <BlockStack gap="300">
+                                    <InlineStack align="space-between">
+                                        <Text as="h3" variant="headingSm" tone="subdued">
+                                            Pending
+                                        </Text>
+                                        <div className="card-icon" style={{
+                                            transition: 'transform 0.3s ease'
+                                        }}>
                                             <Icon source={CalendarIcon} tone="warning" />
-                                        </InlineStack>
-                                        <Text as="p" variant="heading2xl" fontWeight="bold" tone="caution">
-                                            {stats.pending}
-                                        </Text>
+                                        </div>
+                                    </InlineStack>
+                                    <Text as="p" variant="heading2xl" fontWeight="bold" tone="caution">
+                                        {stats.pending}
+                                    </Text>
+                                    <InlineStack align="space-between">
                                         <Text as="p" variant="bodySm" tone="subdued">
-                                            Click to view pending products
+                                            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                Click to view pending products
+                                                <Icon source={ViewIcon} tone="subdued" />
+                                            </span>
                                         </Text>
-                                    </BlockStack>
-                                </UnstyledButton>
-                            </Box>
+                                        {/* 交互提示指示器 */}
+                                        <div className="interaction-hint" style={{
+                                            background: 'rgba(216, 123, 0, 0.1)',
+                                            color: '#D87B00',
+                                            padding: '2px 8px',
+                                            borderRadius: '12px',
+                                            fontSize: '12px',
+                                            fontWeight: 500,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '4px',
+                                            opacity: 0,
+                                            transition: 'opacity 0.3s ease',
+                                            animation: 'pulse 1.5s infinite'
+                                        }}>
+                                            <span>Click</span>
+                                        </div>
+                                    </InlineStack>
+                                </BlockStack>
+                            </div>
                         </Card>
-                        <Card>
-                            <Box padding="400">
-                                <UnstyledButton
-                                    onClick={() => handleFilterCardClick('', 'true')}
-                                    style={{ width: '100%', cursor: 'pointer' }}
-                                >
-                                    <BlockStack gap="300">
-                                        <InlineStack align="space-between">
-                                            <Text as="h3" variant="headingSm" tone="subdued">
-                                                In Stock
-                                            </Text>
+                        <Card padding="0">
+                            <div
+                                style={{
+                                    padding: '16px',
+                                    transition: 'all 0.3s ease',
+                                    cursor: 'pointer',
+                                    borderRadius: '8px',
+                                    height: '100%',
+                                    boxShadow: '0 0 0 1px rgba(63, 63, 68, 0.05), 0 1px 3px 0 rgba(63, 63, 68, 0.15)',
+                                    position: 'relative',
+                                    overflow: 'hidden'
+                                }}
+                                onClick={() => handleFilterCardClick('', 'true')}
+                                onMouseOver={(e: React.MouseEvent<HTMLDivElement>) => {
+                                    const target = e.currentTarget;
+                                    target.style.backgroundColor = '#F1F8F5';
+                                    target.style.transform = 'translateY(-2px)';
+                                    target.style.boxShadow = '0 0 0 1px rgba(63, 63, 68, 0.05), 0 4px 7px 0 rgba(63, 63, 68, 0.15)';
+
+                                    // 添加波纹效果的元素
+                                    const icon = target.querySelector('.card-icon') as HTMLElement;
+                                    if (icon) {
+                                        icon.style.transform = 'scale(1.2) rotate(10deg)';
+                                    }
+
+                                    // 显示交互提示
+                                    const hint = target.querySelector('.interaction-hint') as HTMLElement;
+                                    if (hint) {
+                                        hint.style.opacity = '1';
+                                    }
+                                }}
+                                onMouseOut={(e: React.MouseEvent<HTMLDivElement>) => {
+                                    const target = e.currentTarget;
+                                    target.style.backgroundColor = '';
+                                    target.style.transform = 'translateY(0)';
+                                    target.style.boxShadow = '0 0 0 1px rgba(63, 63, 68, 0.05), 0 1px 3px 0 rgba(63, 63, 68, 0.15)';
+
+                                    // 恢复图标
+                                    const icon = target.querySelector('.card-icon') as HTMLElement;
+                                    if (icon) {
+                                        icon.style.transform = '';
+                                    }
+
+                                    // 隐藏交互提示
+                                    const hint = target.querySelector('.interaction-hint') as HTMLElement;
+                                    if (hint) {
+                                        hint.style.opacity = '0';
+                                    }
+                                }}
+                            >
+                                {/* 波纹动画效果 - 绝对定位在卡片后面 */}
+                                <div className="ripple-background" style={{
+                                    position: 'absolute',
+                                    top: 0,
+                                    left: 0,
+                                    right: 0,
+                                    bottom: 0,
+                                    background: 'radial-gradient(circle, transparent 1%, #F1F8F5 1%) center/15000%',
+                                    opacity: 0.8,
+                                    transform: 'translate3d(0,0,0)',
+                                }}></div>
+
+                                <BlockStack gap="300">
+                                    <InlineStack align="space-between">
+                                        <Text as="h3" variant="headingSm" tone="subdued">
+                                            In Stock
+                                        </Text>
+                                        <div className="card-icon" style={{
+                                            transition: 'transform 0.3s ease'
+                                        }}>
                                             <Icon source={InventoryIcon} tone="success" />
-                                        </InlineStack>
-                                        <Text as="p" variant="heading2xl" fontWeight="bold" tone="success">
-                                            {stats.inStock}
-                                        </Text>
+                                        </div>
+                                    </InlineStack>
+                                    <Text as="p" variant="heading2xl" fontWeight="bold" tone="success">
+                                        {stats.inStock}
+                                    </Text>
+                                    <InlineStack align="space-between">
                                         <Text as="p" variant="bodySm" tone="subdued">
-                                            Click to view in stock products
+                                            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                Click to view in stock products
+                                                <Icon source={ViewIcon} tone="subdued" />
+                                            </span>
                                         </Text>
-                                    </BlockStack>
-                                </UnstyledButton>
-                            </Box>
+                                        {/* 交互提示指示器 */}
+                                        <div className="interaction-hint" style={{
+                                            background: 'rgba(0, 128, 96, 0.1)',
+                                            color: '#008060',
+                                            padding: '2px 8px',
+                                            borderRadius: '12px',
+                                            fontSize: '12px',
+                                            fontWeight: 500,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '4px',
+                                            opacity: 0,
+                                            transition: 'opacity 0.3s ease',
+                                            animation: 'pulse 1.5s infinite'
+                                        }}>
+                                            <span>Click</span>
+                                        </div>
+                                    </InlineStack>
+                                </BlockStack>
+                            </div>
                         </Card>
                     </div>
                 </Layout.Section>
