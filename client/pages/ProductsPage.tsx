@@ -91,6 +91,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
     const [totalProducts, setTotalProducts] = useState(0);
     const [deleteModalActive, setDeleteModalActive] = useState(false);
     const [importProgress, setImportProgress] = useState<{ [key: string]: boolean }>({});
+    const [pageSize, setPageSize] = useState(20); // Ensure pageSize state exists
 
     // 添加请求标记，防止重复请求
     const isFetchingStats = useRef(false);
@@ -112,8 +113,6 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
     const [editingProduct, setEditingProduct] = useState<UnifiedProduct | null>(null);
     const [editLoading, setEditLoading] = useState(false);
 
-    const limit = 20;
-
     // 获取品牌列表
     const fetchBrands = useCallback(async () => {
         try {
@@ -133,7 +132,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
         try {
             const response = await productApi.getProducts({
                 page: currentPage,
-                limit: limit,
+                limit: pageSize, // Use pageSize state
                 importStatus: statusFilter || undefined,
                 availability: availabilityFilter ? availabilityFilter === 'true' : undefined,
                 search: searchValue || undefined,
@@ -157,7 +156,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
             setLoading(false);
             setIsLoading(false);
         }
-    }, [currentPage, limit, statusFilter, availabilityFilter, searchValue, brandFilter, showToast, setIsLoading]);
+    }, [currentPage, pageSize, statusFilter, availabilityFilter, searchValue, brandFilter, showToast, setIsLoading]); // Ensure pageSize is in dependencies
 
     // 获取产品统计数据 - 使用ref防止重复请求
     const fetchProductStats = useCallback(async () => {
@@ -1212,6 +1211,26 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                     />
                                 </Box>
 
+                                {/* Page size selector below filters */}
+                                <Box paddingBlockStart="400">
+                                    <div style={{ maxWidth: '200px' }}>
+                                        <Select
+                                            label="Items per page"
+                                            labelInline
+                                            options={[
+                                                { label: '20 items', value: '20' },
+                                                { label: '50 items', value: '50' },
+                                                { label: '100 items', value: '100' },
+                                            ]}
+                                            value={String(pageSize)}
+                                            onChange={(newValue) => {
+                                                setPageSize(Number(newValue));
+                                                setCurrentPage(1); // Reset to first page
+                                            }}
+                                        />
+                                    </div>
+                                </Box>
+
                                 {/* 选中产品的操作提示和批量操作 */}
                                 {selectedProducts.length > 0 && (
                                     <Card>
@@ -1568,8 +1587,8 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
 
                                 {/* 分页 */}
                                 {totalPages > 1 && (
-                                    <Box>
-                                        <InlineStack align="center">
+                                    <Box paddingBlockStart="400">
+                                        <InlineStack align="center" gap="400" blockAlign="center" wrap={false}>
                                             <Pagination
                                                 hasPrevious={currentPage > 1}
                                                 onPrevious={() => setCurrentPage(currentPage - 1)}
@@ -1590,15 +1609,15 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
             <Modal
                 open={deleteModalActive}
                 onClose={() => setDeleteModalActive(false)}
-                title="确认删除 / Confirm Deletion"
+                title="Confirm Deletion"
                 primaryAction={{
-                    content: '删除产品 / Delete Products',
+                    content: 'Delete Products',
                     destructive: true,
                     onAction: handleBulkDelete,
                 }}
                 secondaryActions={[
                     {
-                        content: '取消 / Cancel',
+                        content: 'Cancel',
                         onAction: () => setDeleteModalActive(false),
                     },
                 ]}
@@ -1606,13 +1625,9 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                 <Modal.Section>
                     <BlockStack gap="400">
                         <Text as="p" variant="bodyMd">
-                            确定要删除选中的 {selectedProducts.length} 个产品吗？
-                        </Text>
-                        <Text as="p" variant="bodyMd">
                             Are you sure you want to delete the selected {selectedProducts.length} product{selectedProducts.length > 1 ? 's' : ''}?
                         </Text>
 
-                        {/* 产品状态统计 */}
                         {selectedProducts.length > 0 && (
                             <Box
                                 padding="400"
@@ -1621,12 +1636,12 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                             >
                                 <BlockStack gap="300">
                                     <Text as="h3" variant="headingSm">
-                                        产品状态统计 / Selected Products Status
+                                        Selected Products Status
                                     </Text>
                                     <InlineStack gap="400" wrap={false}>
                                         <Box background="bg-surface" padding="300" borderRadius="200" borderColor="border" borderWidth="025">
                                             <BlockStack gap="100" align="center">
-                                                <Text as="span" variant="bodySm" tone="subdued">已导入 / Imported</Text>
+                                                <Text as="span" variant="bodySm" tone="subdued">Imported</Text>
                                                 <Text as="p" variant="headingLg" fontWeight="bold" tone="success">
                                                     {products.filter(p => selectedProducts.includes(p.id) && p.importStatus === 'imported').length}
                                                 </Text>
@@ -1634,7 +1649,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                         </Box>
                                         <Box background="bg-surface" padding="300" borderRadius="200" borderColor="border" borderWidth="025">
                                             <BlockStack gap="100" align="center">
-                                                <Text as="span" variant="bodySm" tone="subdued">待处理 / Pending</Text>
+                                                <Text as="span" variant="bodySm" tone="subdued">Pending</Text>
                                                 <Text as="p" variant="headingLg" fontWeight="bold" tone="caution">
                                                     {products.filter(p => selectedProducts.includes(p.id) && p.importStatus === 'pending').length}
                                                 </Text>
@@ -1642,7 +1657,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                         </Box>
                                         <Box background="bg-surface" padding="300" borderRadius="200" borderColor="border" borderWidth="025">
                                             <BlockStack gap="100" align="center">
-                                                <Text as="span" variant="bodySm" tone="subdued">库存中 / In Stock</Text>
+                                                <Text as="span" variant="bodySm" tone="subdued">In Stock</Text>
                                                 <Text as="p" variant="headingLg" fontWeight="bold" tone="success">
                                                     {products.filter(p => selectedProducts.includes(p.id) && p.availability).length}
                                                 </Text>
@@ -1654,11 +1669,10 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                         )}
 
                         <Banner tone="critical">
-                            <p><strong>警告 / Warning:</strong> 此操作无法撤消。所有产品数据将被永久删除。<br />
-                                This action cannot be undone. All product data will be permanently removed.</p>
+                            <p><strong>Warning:</strong> This action cannot be undone. All product data will be permanently removed.</p>
 
                             {products.filter(p => selectedProducts.includes(p.id) && p.importStatus === 'imported').length > 0 && (
-                                <p style={{ marginTop: '8px' }}><strong>注意 / Note:</strong> 您选择的产品中包含已导入到Shopify的产品。删除这些产品将不会从Shopify商店中删除它们，仅从此应用中删除。</p>
+                                <p style={{ marginTop: '8px' }}><strong>Note:</strong> Your selection includes products already imported to Shopify. Deleting them here will only remove them from this app, not from your Shopify store.</p>
                             )}
                         </Banner>
                     </BlockStack>
