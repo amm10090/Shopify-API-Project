@@ -2,6 +2,7 @@ import axios, { AxiosResponse } from 'axios';
 import { logger } from '@server/utils/logger';
 import { UnifiedProduct, CJProduct, PepperjamProduct, CJFetchParams, PepperjamFetchParams } from '@shared/types/index';
 import { cjApiLimitChecker, pepperjamApiLimitChecker } from '@server/config/apiLimits';
+import { CJ_API_LIMITS } from '@server/config/apiLimits';
 
 export class ProductRetriever {
     private skipImageValidation: boolean;
@@ -137,6 +138,44 @@ export class ProductRetriever {
         brandName: string,
         sourceApiName: string
     ): Promise<UnifiedProduct | null> {
+        const cjAdvertiserId = String(cjProduct.advertiserId || ''); // For debugging or specific logic
+        const cjAdvertiserName = cjProduct.advertiserName || 'Unknown Advertiser';
+        const cjProductId = cjProduct.id || 'Unknown ID';
+        const productName = cjProduct.name || `Product ID ${cjProductId}`;
+
+        const cjLink = cjProduct.link || '';
+        let cjBuyUrl = cjProduct.buyUrl || '';
+
+        // Get PID (CJ_CID or BRAND_CID) from environment variables
+        const publisherId = process.env.CJ_CID || process.env.BRAND_CID;
+
+        if (!cjBuyUrl && cjLink && publisherId && cjAdvertiserId) {
+            // buyUrl is missing, but we have the target link (cjLink), publisher ID (publisherId), and advertiser ID (cjAdvertiserId)
+            // Attempt to construct a CJ tracking link
+            // Prefer www.jdoqocy.com as it's a common CJ click server
+            // Ensure the target URL is properly encoded
+            const encodedTargetUrl = encodeURIComponent(cjLink);
+            const constructedBuyUrl = `https://www.jdoqocy.com/click-${publisherId}-${cjAdvertiserId}?url=${encodedTargetUrl}`;
+
+            logger.info(`[CJ Product Processing] Missing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}). Constructed tracking link: ${constructedBuyUrl.substring(0, 150)}...`);
+            cjBuyUrl = constructedBuyUrl; // Use the constructed link
+        } else if (!cjBuyUrl) {
+            logger.warn(`[CJ Product Processing] Missing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}). Also missing data to construct tracking link (cjLink: ${!!cjLink}, publisherId: ${!!publisherId}, advertiserId: ${!!cjAdvertiserId}). Falling back to link: ${cjLink.substring(0, 100)}... This WILL LIKELY CAUSE TRACKING ISSUES.`);
+        } else {
+            // buyUrl exists, perform a simple check
+            const cjTrackingPattern = /\/(click-|image-|impression-)[a-zA-Z0-9]+-[a-zA-Z0-9]+\//;
+            if (!cjTrackingPattern.test(cjBuyUrl) && !(cjBuyUrl.includes('dpbolvw.net') || cjBuyUrl.includes('jdoqocy.com') || cjBuyUrl.includes('tkqlhce.com') || cjBuyUrl.includes('anrdoezrs.net') || cjBuyUrl.includes('commission-junction.com'))) {
+                logger.warn(`[CJ Product Processing] Existing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}) does not appear to be a standard CJ tracking link: ${cjBuyUrl.substring(0, 150)}... This may cause tracking issues.`);
+            } else {
+                logger.info(`[CJ Product Processing] Using existing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}): ${cjBuyUrl.substring(0, 150)}...`);
+            }
+        }
+
+        const affiliateUrl = cjBuyUrl || cjLink; // Prefer cjBuyUrl (either original or constructed)
+
+        const imageUrl = cjProduct.imageUrl || '';
+        let availability = true; // Default to true if not specified
+
         if (!cjProduct) {
             return null;
         }
