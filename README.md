@@ -423,22 +423,795 @@ npm run shopify:deploy
 
 ## 📁 项目结构
 
+### 🏗️ 架构概览
+本项目采用**monorepo多包管理**架构，使用**TypeScript全栈开发**，前后端分离设计，支持本地开发和生产部署。
+
 ```
 Shopify-API-Project/
-├── client/           # React前端应用
-│   ├── components/   # 可复用组件
-│   ├── pages/        # 页面组件
-│   ├── contexts/     # React上下文
-│   └── services/     # API服务
-├── server/           # Express后端服务器
-│   ├── routes/       # API路由
-│   ├── services/     # 业务逻辑服务
-│   ├── middleware/   # 中间件
-│   └── utils/        # 工具函数
-├── shared/           # 共享类型定义
-├── prisma/           # 数据库模型和迁移
-└── scripts/          # 构建和部署脚本
+├── 📱 client/                    # React前端应用 (Vite + React 19)
+│   ├── components/               # 可复用UI组件
+│   │   ├── common/              # 通用组件 (Loading, Modal等)
+│   │   ├── forms/               # 表单组件
+│   │   ├── charts/              # 图表和数据可视化
+│   │   └── layout/              # 布局组件
+│   ├── pages/                   # 页面组件 (路由页面)
+│   │   ├── Dashboard.tsx        # 仪表板主页
+│   │   ├── Products.tsx         # 产品管理页
+│   │   ├── Import.tsx           # 产品导入页
+│   │   ├── Brands.tsx           # 品牌管理页
+│   │   └── Settings.tsx         # 设置页面
+│   ├── contexts/                # React Context状态管理
+│   │   ├── AuthContext.tsx      # 认证状态
+│   │   ├── AppContext.tsx       # 应用全局状态
+│   │   └── ShopifyContext.tsx   # Shopify App Bridge
+│   ├── services/                # API服务层
+│   │   ├── api.ts               # API客户端配置
+│   │   ├── products.ts          # 产品相关API
+│   │   ├── brands.ts            # 品牌相关API
+│   │   └── import.ts            # 导入相关API
+│   ├── utils/                   # 前端工具函数
+│   │   ├── format.ts            # 数据格式化
+│   │   ├── validation.ts        # 表单验证
+│   │   └── constants.ts         # 常量定义
+│   ├── App.tsx                  # 根组件
+│   ├── main.tsx                 # 应用入口
+│   └── tsconfig.json            # 前端TypeScript配置
+├── 🔧 server/                   # Express后端服务器 (Node.js + TypeScript)
+│   ├── routes/                  # API路由定义
+│   │   ├── auth.ts              # 认证路由 (OAuth)
+│   │   ├── products.ts          # 产品CRUD路由
+│   │   ├── brands.ts            # 品牌管理路由
+│   │   ├── import.ts            # 导入任务路由
+│   │   ├── sync.ts              # 同步任务路由
+│   │   ├── webhook.ts           # Shopify Webhook处理
+│   │   └── dashboard.ts         # 仪表板数据路由
+│   ├── services/                # 业务逻辑服务层
+│   │   ├── ShopifyService.ts    # Shopify API集成
+│   │   ├── CJService.ts         # CJ API集成
+│   │   ├── PepperjamService.ts  # Pepperjam API集成
+│   │   ├── ProductService.ts    # 产品业务逻辑
+│   │   ├── BrandService.ts      # 品牌业务逻辑
+│   │   ├── ImportService.ts     # 导入业务逻辑
+│   │   └── SyncService.ts       # 同步业务逻辑
+│   ├── middleware/              # Express中间件
+│   │   ├── auth.ts              # 认证中间件
+│   │   ├── cors.ts              # CORS配置
+│   │   ├── error.ts             # 错误处理
+│   │   ├── rate-limit.ts        # 请求限流
+│   │   └── validation.ts        # 请求验证
+│   ├── utils/                   # 后端工具函数
+│   │   ├── logger.ts            # 日志管理
+│   │   ├── cache.ts             # 缓存管理
+│   │   ├── helpers.ts           # 通用帮助函数
+│   │   └── constants.ts         # 服务端常量
+│   ├── config/                  # 配置文件
+│   │   ├── database.ts          # 数据库配置
+│   │   ├── redis.ts             # Redis缓存配置
+│   │   └── shopify.ts           # Shopify API配置
+│   ├── index.ts                 # 服务器入口文件
+│   └── tsconfig.json            # 后端TypeScript配置
+├── 🔗 shared/                   # 前后端共享代码
+│   ├── types/                   # TypeScript类型定义
+│   │   ├── api.ts               # API请求/响应类型
+│   │   ├── product.ts           # 产品相关类型
+│   │   ├── brand.ts             # 品牌相关类型
+│   │   ├── import.ts            # 导入相关类型
+│   │   └── shopify.ts           # Shopify相关类型
+│   ├── constants/               # 共享常量
+│   ├── utils/                   # 共享工具函数
+│   ├── index.ts                 # 导出入口
+│   └── tsconfig.json            # 共享代码TypeScript配置
+├── 🗄️ prisma/                   # 数据库层 (PostgreSQL + Prisma ORM)
+│   ├── schema.prisma            # 数据库模型定义
+│   ├── migrations/              # 数据库迁移文件
+│   └── seed.ts                  # 数据库种子数据
+├── 🐍 src/                      # Python脚本和工具 (辅助功能)
+│   ├── Shopify/                 # Shopify相关Python脚本
+│   ├── CJ/                      # CJ API相关脚本
+│   ├── Ascend/                  # Ascend平台脚本
+│   ├── Core/                    # 核心Python工具
+│   └── main.py                  # Python主入口
+├── 🔨 scripts/                  # 构建和部署脚本
+│   ├── build.js                 # 构建脚本
+│   ├── dev.js                   # 开发环境启动脚本
+│   ├── deploy.js                # 部署脚本
+│   ├── restart-services.sh      # 服务重启脚本
+│   └── stop-services.sh         # 服务停止脚本
+├── ⚙️ 配置文件
+│   ├── package.json             # 项目依赖和脚本配置
+│   ├── pnpm-workspace.yaml      # PNPM工作区配置
+│   ├── tsconfig.json            # 根TypeScript配置
+│   ├── vite.config.ts           # Vite构建配置
+│   ├── ecosystem.config.js      # PM2进程管理配置
+│   ├── .env.example             # 环境变量模板
+│   ├── .gitignore              # Git忽略文件
+│   └── .npmrc                  # NPM配置
+├── 📋 Shopify配置文件
+│   ├── shopify.app.toml         # Shopify应用配置
+│   ├── shopify.web.toml         # Shopify Web配置
+│   └── shopify.app.product-importer.toml # 产品导入器配置
+├── 📄 文档文件
+│   ├── README.md                # 项目说明文档
+│   ├── requirements.txt         # Python依赖 (如果使用Python)
+│   └── index.html               # HTML模板文件
+└── 📊 其他文件
+    ├── tsconfig.tsbuildinfo     # TypeScript构建缓存
+    └── logs/                    # 日志文件目录 (运行时生成)
 ```
+
+### 🎯 核心技术栈
+
+#### **前端技术栈**
+- **React 19** - 最新版本React框架
+- **TypeScript** - 类型安全的JavaScript
+- **Vite** - 现代化前端构建工具
+- **Shopify Polaris** - Shopify官方UI组件库
+- **Shopify App Bridge** - Shopify应用桥接
+- **React Query** - 服务端状态管理
+- **Axios** - HTTP客户端
+
+#### **后端技术栈**
+- **Node.js 18+** - 服务器运行环境
+- **Express.js** - Web框架
+- **TypeScript** - 类型安全开发
+- **Prisma ORM** - 数据库ORM
+- **PostgreSQL** - 关系型数据库
+- **Bull Queue** - 任务队列管理
+- **Winston** - 日志管理
+- **JWT** - 身份认证
+
+#### **DevOps和工具**
+- **PNPM** - 包管理器
+- **PM2** - 进程管理
+- **Cloudflare Tunnels** - 本地开发隧道
+- **ESLint** - 代码检查
+- **Prettier** - 代码格式化
+- **Shopify CLI** - Shopify开发工具
+
+### 🔧 关键文件说明
+
+#### **根目录配置文件**
+| 文件 | 作用 | 重要性 |
+|------|------|--------|
+| `package.json` | 项目依赖、脚本定义、元数据 | ⭐⭐⭐⭐ |
+| `pnpm-workspace.yaml` | PNPM工作区配置，monorepo管理 | ⭐⭐⭐ |
+| `tsconfig.json` | 根TypeScript配置，路径映射 | ⭐⭐⭐⭐ |
+| `vite.config.ts` | 前端构建配置，开发服务器 | ⭐⭐⭐⭐ |
+| `ecosystem.config.js` | PM2生产环境进程管理 | ⭐⭐⭐ |
+| `.env.example` | 环境变量模板 | ⭐⭐⭐⭐ |
+
+#### **Shopify配置文件**
+| 文件 | 作用 | 重要性 |
+|------|------|--------|
+| `shopify.app.toml` | Shopify应用主配置 | ⭐⭐⭐⭐ |
+| `shopify.web.toml` | Shopify Web服务配置 | ⭐⭐⭐ |
+| `shopify.app.product-importer.toml` | 产品导入器特定配置 | ⭐⭐⭐ |
+
+#### **数据库相关**
+| 文件 | 作用 | 重要性 |
+|------|------|--------|
+| `prisma/schema.prisma` | 数据库模型定义 | ⭐⭐⭐⭐ |
+| `prisma/seed.ts` | 数据库种子数据 | ⭐⭐ |
+
+### 🚀 开发流程
+
+1. **环境准备**: 安装依赖 → 配置环境变量 → 初始化数据库
+2. **开发启动**: `npm run dev` 或 `npm run shopify:dev`
+3. **功能开发**: 前端页面 → 后端API → 数据库模型 → 测试
+4. **生产部署**: 构建 → PM2部署 → Shopify应用发布
+
+### 🔄 数据流向
+
+```
+用户操作 → React前端 → API路由 → 业务服务 → 数据库
+                  ↓
+外部API (CJ/Pepperjam) → 数据转换 → Shopify API → 本地存储
+```
+
+### 🎨 命名规范
+
+- **文件夹**: 小写，单词用连字符分隔 (kebab-case)
+- **文件名**: PascalCase (组件) 或 camelCase (工具)
+- **变量**: camelCase
+- **常量**: UPPER_SNAKE_CASE
+- **类型**: PascalCase
+
+### 📂 详细目录说明
+
+#### **Client目录结构**
+```
+client/
+├── components/                        # 可复用React组件
+│   ├── FilterPanel.tsx               # 产品过滤面板组件
+│   ├── ImageWithFallback.tsx         # 带备用图片的图像组件
+│   ├── ProductCard.tsx               # 产品卡片展示组件
+│   ├── ProductDetailModal.tsx        # 产品详情弹窗组件
+│   ├── ProductEditModal.tsx          # 产品编辑弹窗组件
+│   └── ProductGrid.tsx               # 产品网格布局组件
+├── contexts/                         # React Context状态管理
+│   ├── AuthContext.tsx               # 用户认证状态管理
+│   ├── AppContext.tsx                # 应用全局状态管理
+│   └── ShopifyContext.tsx            # Shopify App Bridge集成
+├── pages/                            # 页面级组件
+│   ├── BrandsPage.tsx                # 品牌管理页面
+│   ├── DashboardPage.tsx             # 仪表板首页
+│   ├── ImportPage.tsx                # 产品导入页面
+│   ├── ProductsPage.tsx              # 产品管理页面
+│   └── SettingsPage.tsx              # 应用设置页面
+├── services/                         # API服务封装
+│   ├── api.ts                        # 基础API客户端配置
+│   ├── brands.ts                     # 品牌相关API调用
+│   ├── products.ts                   # 产品相关API调用
+│   └── import.ts                     # 导入功能API调用
+├── utils/                            # 前端工具函数
+│   ├── format.ts                     # 数据格式化工具
+│   ├── validation.ts                 # 表单验证工具
+│   └── constants.ts                  # 前端常量定义
+├── App.tsx                           # 根应用组件
+├── main.tsx                          # 应用入口点
+└── tsconfig.json                     # 前端TypeScript配置
+```
+
+#### **Server目录结构**
+```
+server/
+├── routes/                           # Express路由定义
+│   ├── auth.ts                       # 认证路由 (OAuth, JWT)
+│   ├── brands.ts                     # 品牌管理API路由
+│   ├── dashboard.ts                  # 仪表板数据API路由
+│   ├── import.ts                     # 产品导入API路由
+│   ├── products.ts                   # 产品CRUD API路由
+│   ├── settings.ts                   # 应用设置API路由
+│   ├── shopify.ts                    # Shopify集成API路由
+│   ├── webhookManagement.ts          # Webhook管理API路由
+│   └── webhooks.ts                   # Webhook处理路由
+├── services/                         # 业务逻辑服务层
+│   ├── CustomAppService.ts           # 自定义应用服务
+│   ├── ProductRetriever.ts           # 产品获取服务
+│   ├── ShopifyService.ts             # Shopify API集成服务
+│   └── WebhookService.ts             # Webhook处理服务
+├── middleware/                       # Express中间件
+│   ├── auth.ts                       # 认证中间件
+│   ├── cors.ts                       # CORS配置中间件
+│   ├── error.ts                      # 错误处理中间件
+│   ├── rate-limit.ts                 # 请求限流中间件
+│   └── validation.ts                 # 请求验证中间件
+├── utils/                           # 后端工具函数
+│   ├── logger.ts                     # Winston日志管理
+│   ├── cache.ts                      # Redis缓存管理
+│   ├── helpers.ts                    # 通用帮助函数
+│   └── constants.ts                  # 服务端常量定义
+├── config/                          # 配置文件
+│   ├── database.ts                   # 数据库连接配置
+│   └── shopify.ts                    # Shopify API配置
+├── index.ts                         # Express服务器入口
+└── tsconfig.json                    # 后端TypeScript配置
+```
+
+#### **Shared目录结构**
+```
+shared/
+├── types/                           # TypeScript类型定义
+│   ├── api.ts                       # API请求/响应类型
+│   ├── product.ts                   # 产品数据类型
+│   ├── brand.ts                     # 品牌数据类型
+│   ├── import.ts                    # 导入任务类型
+│   └── shopify.ts                   # Shopify相关类型
+├── constants/                       # 共享常量
+├── utils/                          # 前后端共用工具函数
+├── index.ts                        # 统一导出入口
+└── tsconfig.json                   # 共享代码TypeScript配置
+```
+
+#### **数据库结构 (Prisma)**
+```
+prisma/
+├── schema.prisma                    # 数据库模型定义
+│   ├── Brand 模型                   # 品牌信息表
+│   ├── Product 模型                 # 产品信息表
+│   ├── ImportJob 模型               # 导入任务表
+│   ├── SyncLog 模型                 # 同步日志表
+│   └── ShopifyWebhook 模型          # Webhook记录表
+├── migrations/                      # 数据库迁移文件
+│   └── [timestamp]_[description]/   # 各版本迁移记录
+└── seed.ts                         # 数据库初始数据
+```
+
+### 🔑 核心文件职责
+
+#### **关键业务文件**
+| 文件路径 | 主要职责 | 技术要点 |
+|----------|----------|----------|
+| `server/services/ShopifyService.ts` | Shopify API集成 | OAuth认证、产品CRUD、Webhook处理 |
+| `server/services/ProductRetriever.ts` | 第三方API产品获取 | CJ/Pepperjam API集成、数据转换 |
+| `server/services/WebhookService.ts` | Webhook事件处理 | 事件验证、状态同步、错误恢复 |
+| `client/pages/ImportPage.tsx` | 产品导入界面 | 批量操作、进度显示、错误处理 |
+| `client/pages/ProductsPage.tsx` | 产品管理界面 | 列表展示、筛选搜索、状态管理 |
+
+#### **配置和工具文件**
+| 文件路径 | 主要职责 | 配置要点 |
+|----------|----------|----------|
+| `vite.config.ts` | 前端构建配置 | HMR设置、代理配置、环境变量 |
+| `ecosystem.config.js` | PM2进程管理 | 内存限制、日志配置、重启策略 |
+| `prisma/schema.prisma` | 数据库模型 | 关系定义、索引设置、数据类型 |
+| `shopify.app.toml` | Shopify应用配置 | 权限范围、回调URL、应用信息 |
+
+#### **辅助Python脚本**
+```
+src/
+├── Shopify/                         # Shopify相关Python工具
+│   ├── data_processor.py            # 数据处理脚本
+│   └── bulk_operations.py           # 批量操作脚本
+├── CJ/                             # CJ API相关脚本
+│   ├── product_fetcher.py           # 产品获取脚本
+│   └── brand_analyzer.py            # 品牌分析脚本
+├── Core/                           # 核心Python工具
+│   ├── data_validator.py            # 数据验证工具
+│   └── image_processor.py           # 图片处理工具
+└── main.py                         # Python工具统一入口
+```
+
+## 📚 开发指南
+
+### 🔧 开发环境配置
+
+#### 1. 系统要求
+- **Node.js**: >= 18.0.0
+- **PNPM**: >= 8.0.0 (推荐) 或 NPM >= 8.0.0
+- **PostgreSQL**: >= 12.0 (生产环境) 或 SQLite (开发环境)
+- **Git**: 版本控制
+
+#### 2. IDE推荐设置
+**VS Code插件**:
+- TypeScript Importer
+- Prisma
+- ES7+ React/Redux/React-Native snippets
+- Shopify Liquid
+- Auto Rename Tag
+- Bracket Pair Colorizer
+
+**配置文件** (`.vscode/settings.json`):
+```json
+{
+  "typescript.preferences.importModuleSpecifier": "relative",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": true
+  }
+}
+```
+
+#### 3. 环境变量详解
+```env
+# =================
+# Shopify应用配置
+# =================
+SHOPIFY_API_KEY=your_api_key                    # 从Shopify Partner Dashboard获取
+SHOPIFY_API_SECRET=your_api_secret              # 从Shopify Partner Dashboard获取
+SHOPIFY_STORE_NAME=your-store.myshopify.com    # 测试店铺域名
+SHOPIFY_APP_URL=https://your-tunnel.trycloudflare.com  # 公网访问URL
+SHOPIFY_SCOPES=read_products,write_products,read_orders  # 应用权限
+
+# =================
+# 数据库配置
+# =================
+DATABASE_URL="postgresql://user:password@localhost:5432/shopify_db"  # 生产环境
+# DATABASE_URL="file:./dev.db"  # 开发环境SQLite
+
+# =================
+# 服务器配置
+# =================
+NODE_ENV=development          # 环境: development | production
+PORT=3000                    # 服务器端口
+CLIENT_PORT=5173             # 前端开发服务器端口
+SERVER_HOST=localhost        # 服务器主机
+
+# =================
+# 联盟营销API配置
+# =================
+CJ_API_KEY=your_cj_api_key              # CJ Affiliate API密钥
+CJ_WEBSITE_ID=your_cj_website_id        # CJ网站ID
+PEPPERJAM_API_KEY=your_pepperjam_key    # Pepperjam API密钥
+PEPPERJAM_PROGRAM_ID=your_program_id    # Pepperjam程序ID
+
+# =================
+# 可选配置
+# =================
+LOG_LEVEL=info                          # 日志级别: error | warn | info | debug
+REDIS_URL=redis://localhost:6379        # Redis缓存 (可选)
+WEBHOOK_SECRET=your_webhook_secret      # Webhook验证密钥
+```
+
+### 🚀 快速开始
+
+#### 方法一: 使用Shopify CLI (推荐)
+```bash
+# 1. 安装Shopify CLI
+npm install -g @shopify/cli @shopify/theme
+
+# 2. 克隆项目
+git clone <repository-url>
+cd Shopify-API-Project
+
+# 3. 安装依赖
+pnpm install
+
+# 4. 配置环境变量
+cp .env.example .env
+# 编辑.env文件填入你的配置
+
+# 5. 初始化数据库
+pnpm run db:generate
+pnpm run db:migrate
+
+# 6. 启动开发服务器
+pnpm run shopify:dev
+```
+
+#### 方法二: 手动启动
+```bash
+# 1. 启动后端服务器
+pnpm run dev:server
+
+# 2. 启动前端开发服务器 (新终端)
+pnpm run dev:client
+
+# 3. 设置Cloudflare隧道 (新终端)
+cloudflared tunnel --url localhost:3000
+```
+
+### 🔄 开发工作流程
+
+#### 1. 功能开发流程
+```mermaid
+graph TD
+    A[需求分析] --> B[设计API接口]
+    B --> C[创建数据库模型]
+    C --> D[实现后端服务]
+    D --> E[开发前端页面]
+    E --> F[集成测试]
+    F --> G[代码审查]
+    G --> H[部署到测试环境]
+```
+
+#### 2. 代码提交规范
+```bash
+# 提交格式
+git commit -m "type(scope): description"
+
+# 类型说明
+feat:     新功能
+fix:      错误修复
+docs:     文档更新
+style:    代码格式
+refactor: 重构
+test:     测试相关
+chore:    构建/工具变动
+```
+
+#### 3. 分支管理策略
+```
+main          # 主分支，生产环境代码
+├── develop   # 开发分支
+├── feature/* # 功能分支
+├── hotfix/*  # 紧急修复分支
+└── release/* # 发布分支
+```
+
+### 🔧 常用开发命令
+
+#### 开发环境
+```bash
+# 启动开发服务器
+pnpm run dev                    # 完整开发环境
+pnpm run dev:server            # 仅后端服务器
+pnpm run dev:client            # 仅前端服务器
+pnpm run shopify:dev           # 使用Shopify CLI
+
+# 代码检查和格式化
+pnpm run lint                   # ESLint检查
+pnpm run lint:fix              # 自动修复ESLint错误
+pnpm run type-check            # TypeScript类型检查
+```
+
+#### 数据库操作
+```bash
+# 基础操作
+pnpm run db:generate           # 生成Prisma客户端
+pnpm run db:migrate            # 应用数据库迁移
+pnpm run db:studio             # 打开数据库管理界面
+pnpm run db:seed               # 插入种子数据
+
+# 高级操作
+pnpm run db:reset              # 重置数据库
+pnpm run db:push               # 推送schema到数据库
+```
+
+#### 构建和部署
+```bash
+# 构建项目
+pnpm run build                 # 构建生产版本
+pnpm run build:watch           # 监听模式构建
+
+# 生产部署
+pnpm run start:prod            # 构建并启动生产服务器
+pnpm run pm2:start             # 使用PM2启动
+pnpm run pm2:logs              # 查看PM2日志
+```
+
+### 🔍 调试技巧
+
+#### 1. 后端调试
+```bash
+# 启动调试模式
+pnpm run dev:server --inspect
+
+# VS Code调试配置
+{
+  "type": "node",
+  "request": "attach",
+  "name": "Attach to Server",
+  "port": 9229
+}
+```
+
+#### 2. 前端调试
+- 使用React DevTools
+- 使用Chrome DevTools的Network标签
+- 使用Console.log调试
+- 使用Shopify App Bridge DevTools
+
+#### 3. API调试
+```bash
+# 测试API端点
+curl -X GET "http://localhost:3000/api/products" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# 使用Postman或Insomnia
+# 导入API文档进行测试
+```
+
+### 📊 性能优化
+
+#### 1. 前端优化
+- 使用React.memo()避免不必要的重渲染
+- 使用useMemo()和useCallback()优化计算
+- 按需加载组件 (React.lazy())
+- 优化图片加载 (lazy loading)
+
+#### 2. 后端优化
+- 数据库查询优化
+- 使用Redis缓存热点数据
+- API响应压缩
+- 连接池管理
+
+#### 3. 构建优化
+- Tree shaking移除未使用的代码
+- 代码分割和懒加载
+- 资源压缩和混淆
+- CDN加速静态资源
+
+### 🧪 测试策略
+
+#### 1. 单元测试
+```bash
+# 运行测试
+pnpm run test
+
+# 测试覆盖率
+pnpm run test:coverage
+```
+
+#### 2. 集成测试
+- API端点测试
+- 数据库操作测试
+- Shopify API集成测试
+
+#### 3. E2E测试
+- 用户操作流测试
+- 完整业务流程测试
+
+### 📝 文档维护
+
+#### 1. API文档
+- 使用JSDoc注释
+- 保持README.md更新
+- 维护CHANGELOG.md
+
+#### 2. 代码注释
+- 复杂业务逻辑必须注释
+- 外部API集成说明
+- 配置参数解释
+
+### 🆘 常见问题解决
+
+#### 1. 依赖安装问题
+```bash
+# 清除缓存
+pnpm store prune
+rm -rf node_modules
+pnpm install
+
+# 使用npm作为备选
+npm ci
+```
+
+#### 2. 端口冲突
+```bash
+# 查找占用端口的进程
+lsof -ti:3000
+kill -9 <PID>
+
+# 修改端口
+export PORT=3001
+```
+
+#### 3. 数据库连接失败
+```bash
+# 检查数据库状态
+systemctl status postgresql
+
+# 重启数据库
+systemctl restart postgresql
+```
+
+#### 4. Shopify认证失败
+- 检查API密钥是否正确
+- 确认应用URL配置
+- 验证隧道连接状态
+- 检查应用权限范围
+
+## 🌟 项目特色功能
+
+### 🎯 核心业务功能
+
+#### 1. **智能产品导入系统**
+- **多API源支持**: 同时支持CJ和Pepperjam两大联盟营销平台
+- **智能数据映射**: 自动将第三方API数据转换为Shopify产品格式
+- **批量导入处理**: 支持大批量产品同时导入，带进度跟踪
+- **原始数据保存**: 完整保存API响应数据，便于后续分析和追溯
+
+#### 2. **多策略产品匹配算法**
+```typescript
+// 匹配策略优先级（高到低）
+1. 精确ID匹配 (sourceProductId)
+2. 完整标题匹配 (title exact match)
+3. 清理标题匹配 (normalized title)
+4. Jaccard相似度匹配 (>50% similarity)
+5. 品牌+部分标题匹配 (>30% word match)
+6. 模糊匹配 (>20% similarity)
+```
+
+#### 3. **实时同步机制**
+- **定时同步**: 定期更新产品库存和价格信息
+- **Webhook同步**: 实时监听Shopify商品变化
+- **增量同步**: 只同步变化的数据，提高效率
+- **错误恢复**: 自动重试失败的同步任务
+
+#### 4. **图片处理增强**
+- **智能图片验证**: URL格式、可访问性、内容类型验证
+- **多重回退策略**: URL编码、代理服务、格式转换
+- **图片诊断工具**: 专门的API端点用于诊断图片问题
+- **自动修复功能**: 一键修复产品图片问题
+
+### 🔧 技术亮点
+
+#### 1. **现代化前端架构**
+- **React 19**: 使用最新版本React，支持并发特性
+- **TypeScript严格模式**: 完整的类型安全保障
+- **Shopify Polaris**: 原生Shopify设计语言
+- **响应式设计**: 适配各种屏幕尺寸
+
+#### 2. **可扩展后端架构**
+- **分层架构**: 路由 → 服务 → 数据访问层
+- **服务化设计**: 每个业务领域独立的服务类
+- **中间件模式**: 认证、CORS、限流等横切关注点
+- **错误边界**: 完善的错误处理和日志记录
+
+#### 3. **数据库设计优化**
+- **Prisma ORM**: 类型安全的数据库访问
+- **关系模型**: 品牌、产品、导入任务的完整关系
+- **索引优化**: 基于查询模式的索引设计
+- **迁移管理**: 版本化的数据库变更管理
+
+#### 4. **DevOps最佳实践**
+- **Monorepo管理**: PNPM workspace统一管理
+- **多环境配置**: 开发、测试、生产环境隔离
+- **进程管理**: PM2生产环境进程管理
+- **日志系统**: Winston结构化日志
+
+### 🛡️ 安全性设计
+
+#### 1. **认证和授权**
+- **OAuth 2.0**: 标准的Shopify OAuth流程
+- **JWT Token**: 安全的会话管理
+- **权限验证**: 细粒度的API权限控制
+- **CSRF保护**: 跨站请求伪造防护
+
+#### 2. **数据安全**
+- **参数验证**: Zod schema验证所有输入
+- **SQL注入防护**: Prisma ORM自动防护
+- **敏感数据加密**: API密钥等敏感信息加密存储
+- **HTTPS强制**: 生产环境强制HTTPS
+
+#### 3. **API安全**
+- **请求限流**: 防止API滥用
+- **Webhook验证**: HMAC-SHA256签名验证
+- **重复请求检测**: 防止重复处理
+- **超时处理**: 防止长时间阻塞
+
+### 📊 性能优化
+
+#### 1. **前端性能**
+- **代码分割**: 按需加载减少初始包大小
+- **图片懒加载**: 优化图片加载性能
+- **缓存策略**: 合理的浏览器缓存配置
+- **虚拟滚动**: 大列表性能优化
+
+#### 2. **后端性能**
+- **数据库优化**: 查询优化和索引使用
+- **缓存层**: Redis缓存热点数据
+- **连接池**: 数据库连接池管理
+- **异步处理**: 耗时任务异步化
+
+#### 3. **网络优化**
+- **资源压缩**: Gzip压缩响应内容
+- **CDN加速**: 静态资源CDN分发
+- **HTTP/2**: 支持HTTP/2协议
+- **长连接**: 减少连接建立开销
+
+### 🔍 可观测性
+
+#### 1. **日志系统**
+- **结构化日志**: JSON格式便于解析
+- **日志级别**: Error、Warn、Info、Debug
+- **日志轮转**: 防止日志文件过大
+- **日志聚合**: 集中日志收集和分析
+
+#### 2. **监控告警**
+- **性能监控**: API响应时间监控
+- **错误监控**: 异常情况实时告警
+- **业务监控**: 导入成功率等业务指标
+- **资源监控**: CPU、内存使用情况
+
+#### 3. **调试工具**
+- **API调试**: 内置API测试工具
+- **数据库调试**: Prisma Studio可视化
+- **网络调试**: 详细的请求/响应日志
+- **性能分析**: 性能瓶颈分析工具
+
+### 🌐 部署方案
+
+#### 1. **本地开发**
+- **Cloudflare Tunnels**: 本地开发外网访问
+- **热重载**: 代码修改即时生效
+- **环境隔离**: 独立的开发环境配置
+- **调试支持**: 完整的调试工具链
+
+#### 2. **生产部署**
+- **Docker化**: 容器化部署支持
+- **PM2管理**: 进程管理和监控
+- **负载均衡**: 支持多实例部署
+- **蓝绿部署**: 零停机更新
+
+#### 3. **云原生**
+- **微服务架构**: 可拆分为多个服务
+- **容器编排**: Kubernetes支持
+- **服务发现**: 自动服务注册和发现
+- **配置管理**: 外部化配置管理
+
+## 🎉 总结
+
+这个Shopify产品导入应用是一个**现代化、可扩展、高性能**的全栈应用，具有以下特点：
+
+✅ **技术先进**: 采用最新的技术栈和最佳实践  
+✅ **架构清晰**: 分层架构，职责明确，易于维护  
+✅ **功能完善**: 覆盖产品导入的完整业务流程  
+✅ **性能优化**: 多层次的性能优化方案  
+✅ **安全可靠**: 完善的安全防护和错误处理  
+✅ **开发友好**: 完整的开发工具链和文档  
+
+无论是对于开发人员学习现代Web开发技术，还是对于企业实际使用产品导入功能，这个项目都提供了一个优秀的参考和解决方案。
 
 ## 🤝 贡献指南
 

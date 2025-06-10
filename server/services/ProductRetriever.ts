@@ -152,21 +152,39 @@ export class ProductRetriever {
         if (!cjBuyUrl && cjLink && publisherId && cjAdvertiserId) {
             // buyUrl is missing, but we have the target link (cjLink), publisher ID (publisherId), and advertiser ID (cjAdvertiserId)
             // Attempt to construct a CJ tracking link
-            // Prefer www.jdoqocy.com as it's a common CJ click server
+            // Use dpbolvw.net as shown in the example URL
             // Ensure the target URL is properly encoded
             const encodedTargetUrl = encodeURIComponent(cjLink);
-            const constructedBuyUrl = `https://www.jdoqocy.com/click-${publisherId}-${cjAdvertiserId}?url=${encodedTargetUrl}`;
+            
+            // Build the tracking link with optional SKU parameter
+            let constructedBuyUrl = `https://www.dpbolvw.net/click-${publisherId}-${cjAdvertiserId}?url=${encodedTargetUrl}`;
+            
+            // Add SKU parameter if available (improves tracking accuracy)
+            const productSku = cjProduct.sku || `${cjProduct.id}`;
+            if (productSku) {
+                constructedBuyUrl += `&cjsku=${encodeURIComponent(productSku)}`;
+            }
 
             logger.info(`[CJ Product Processing] Missing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}). Constructed tracking link: ${constructedBuyUrl.substring(0, 150)}...`);
             cjBuyUrl = constructedBuyUrl; // Use the constructed link
         } else if (!cjBuyUrl) {
             logger.warn(`[CJ Product Processing] Missing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}). Also missing data to construct tracking link (cjLink: ${!!cjLink}, publisherId: ${!!publisherId}, advertiserId: ${!!cjAdvertiserId}). Falling back to link: ${cjLink.substring(0, 100)}... This WILL LIKELY CAUSE TRACKING ISSUES.`);
         } else {
-            // buyUrl exists, perform a simple check
+            // buyUrl exists, perform a simple check and enhance if needed
             const cjTrackingPattern = /\/(click-|image-|impression-)[a-zA-Z0-9]+-[a-zA-Z0-9]+\//;
             if (!cjTrackingPattern.test(cjBuyUrl) && !(cjBuyUrl.includes('dpbolvw.net') || cjBuyUrl.includes('jdoqocy.com') || cjBuyUrl.includes('tkqlhce.com') || cjBuyUrl.includes('anrdoezrs.net') || cjBuyUrl.includes('commission-junction.com'))) {
                 logger.warn(`[CJ Product Processing] Existing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}) does not appear to be a standard CJ tracking link: ${cjBuyUrl.substring(0, 150)}... This may cause tracking issues.`);
             } else {
+                // If buyUrl exists but doesn't have SKU parameter, try to add it
+                if (cjBuyUrl && !cjBuyUrl.includes('cjsku=')) {
+                    const productSku = cjProduct.sku || `${cjProduct.id}`;
+                    if (productSku) {
+                        const separator = cjBuyUrl.includes('?') ? '&' : '?';
+                        cjBuyUrl += `${separator}cjsku=${encodeURIComponent(productSku)}`;
+                        logger.info(`[CJ Product Processing] Enhanced existing buyUrl with SKU parameter for product: "${productName}" (ID: ${cjProductId})`);
+                    }
+                }
+                
                 logger.info(`[CJ Product Processing] Using existing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}): ${cjBuyUrl.substring(0, 150)}...`);
             }
         }
@@ -230,7 +248,7 @@ export class ProductRetriever {
             description: cjProduct.description || '',
             price: parseFloat(priceInfo.amount),
             currency: priceInfo.currency || 'USD',
-            affiliateUrl: cjProduct.link,
+            affiliateUrl: affiliateUrl,
             imageUrl: cjProduct.imageLink,
             availability: (cjProduct.availability || 'in stock').toLowerCase() === 'in stock',
             salePrice: undefined,
@@ -319,8 +337,10 @@ export class ProductRetriever {
                                 }
                                 imageLink
                                 link
+                                buyUrl
                                 brand
                                 lastUpdated
+                                sku
                                 ... on Shopping {
                                     availability
                                     productType
@@ -512,8 +532,10 @@ export class ProductRetriever {
                         }
                         imageLink
                         link
+                        buyUrl
                         brand
                         lastUpdated
+                        sku
                         ... on Shopping {
                             availability
                             productType
