@@ -509,7 +509,9 @@ router.post('/update', async (req: Request, res: Response, next: NextFunction) =
             errors: [] as Array<{ productId: string; error: string }>
         };
 
-        const productRetriever = new ProductRetriever();
+        const skipImageValidation = process.env.SKIP_IMAGE_VALIDATION === 'true';
+        const strictImageValidation = process.env.STRICT_IMAGE_VALIDATION !== 'false'; // 默认为true
+        const productRetriever = new ProductRetriever(skipImageValidation, strictImageValidation);
 
         for (const productId of productIds) {
             try {

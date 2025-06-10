@@ -5,7 +5,9 @@ import { logger } from '@server/utils/logger';
 import { ImportJob, ApiResponse } from '@shared/types/index';
 
 const router = Router();
-const productRetriever = new ProductRetriever();
+const skipImageValidation = process.env.SKIP_IMAGE_VALIDATION === 'true';
+const strictImageValidation = process.env.STRICT_IMAGE_VALIDATION !== 'false'; // 默认为true
+const productRetriever = new ProductRetriever(skipImageValidation, strictImageValidation);
 
 /**
  * 开始导入任务 - 从API获取产品

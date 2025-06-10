@@ -47,6 +47,7 @@ interface SystemSettings {
     system: {
         defaultProductLimit: number;
         skipImageValidation: boolean;
+        strictImageValidation: boolean;
         defaultInventoryQuantity: number;
         logLevel: string;
         nodeEnv: string;
@@ -111,6 +112,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
     // 导入设置
     const [defaultProductLimit, setDefaultProductLimit] = useState('50');
     const [skipImageValidation, setSkipImageValidation] = useState(false);
+    const [strictImageValidation, setStrictImageValidation] = useState(true);
     const [defaultInventoryQuantity, setDefaultInventoryQuantity] = useState('99');
     const [autoImportEnabled, setAutoImportEnabled] = useState(false);
     const [importSchedule, setImportSchedule] = useState('daily');
@@ -141,6 +143,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                 // 填充系统设置表单字段
                 setDefaultProductLimit(settingsResponse.data.system.defaultProductLimit.toString());
                 setSkipImageValidation(settingsResponse.data.system.skipImageValidation);
+                setStrictImageValidation(settingsResponse.data.system.strictImageValidation ?? true);
                 setDefaultInventoryQuantity(settingsResponse.data.system.defaultInventoryQuantity?.toString() || '99');
 
                 // 注意：出于安全考虑，API密钥等敏感信息不会从后端返回
@@ -290,6 +293,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                     settingsData = {
                         defaultProductLimit: parseInt(defaultProductLimit) || 50,
                         skipImageValidation: skipImageValidation,
+                        strictImageValidation: strictImageValidation,
                         defaultInventoryQuantity: parseInt(defaultInventoryQuantity) || 99,
                         autoImportEnabled: autoImportEnabled,
                         importSchedule: importSchedule
@@ -329,6 +333,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
         shopifyAccessToken,
         defaultProductLimit,
         skipImageValidation,
+        strictImageValidation,
         defaultInventoryQuantity,
         autoImportEnabled,
         importSchedule,
@@ -738,8 +743,17 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
                                         label="Skip Image Validation"
                                         checked={skipImageValidation}
                                         onChange={setSkipImageValidation}
-                                        helpText="Skip image validation during import (faster but may import invalid images)"
+                                        helpText="Skip all image validation during import (fastest but may import broken images)"
                                     />
+
+                                    {!skipImageValidation && (
+                                        <Checkbox
+                                            label="Strict Image Validation"
+                                            checked={strictImageValidation}
+                                            onChange={setStrictImageValidation}
+                                            helpText="Enable strict image validation to filter out 404 and invalid images (slower but more reliable)"
+                                        />
+                                    )}
 
                                     <Checkbox
                                         label="Enable Auto Import"

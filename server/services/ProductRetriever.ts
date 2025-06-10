@@ -7,11 +7,13 @@ import { buildCJAffiliateUrl, validateCJEnvironment } from '@server/config/cjAff
 
 export class ProductRetriever {
     private skipImageValidation: boolean;
+    private strictImageValidation: boolean;
     private maxRawProductsToScan = 1000;
 
-    constructor(skipImageValidation: boolean = false) {
+    constructor(skipImageValidation: boolean = false, strictImageValidation: boolean = true) {
         this.skipImageValidation = skipImageValidation;
-        logger.info(`ProductRetriever initialized: skipImageValidation=${skipImageValidation}`);
+        this.strictImageValidation = strictImageValidation;
+        logger.info(`ProductRetriever initialized: skipImageValidation=${skipImageValidation}, strictImageValidation=${strictImageValidation}`);
 
         // 检查环境变量配置
         this.checkEnvironmentVariables();
@@ -66,12 +68,12 @@ export class ProductRetriever {
     }
 
     /**
-     * 验证图片URL是否有效（改进版本 - 更宽松的验证）
+     * 验证图片URL是否有效（严格验证版本）
      */
     private async isValidImageUrl(
         url: string,
-        timeout: number = 8000,
-        maxRetries: number = 1
+        timeout: number = 10000,
+        maxRetries: number = 2
     ): Promise<boolean> {
         if (this.skipImageValidation) {
             return true;
@@ -82,81 +84,144 @@ export class ProductRetriever {
             return false;
         }
 
-        // 已知的图片服务域名直接通过验证
+        // 如果不是严格验证模式，使用更宽松的检查
+        if (!this.strictImageValidation) {
+            const imageExtensions = /\.(jpg|jpeg|png|gif|webp|svg|bmp|tiff)(\?.*)?$/i;
+            const trustedDomains = [
+                'amazonaws.com',
+                'cloudinary.com',
+                'imagekit.io',
+                'unsplash.com',
+                'pexels.com',
+                'shopifycdn.com',
+                'shopify.com'
+            ];
+
+            const hasTrustedDomain = trustedDomains.some(domain => url.includes(domain));
+            const hasImageExtension = imageExtensions.test(url);
+
+            if (hasTrustedDomain || hasImageExtension) {
+                logger.debug(`Non-strict mode: Accepting image URL: ${url.substring(0, 100)}...`);
+                return true;
+            }
+        }
+
+        // 严格验证模式：进行实际的HTTP请求验证
+        // 多种User-Agent来尝试，某些CDN可能会阻止特定的User-Agent
+        const userAgents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (compatible; Shopify/1.0; +https://shopify.com/)',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        ];
+
+        // 对每种User-Agent进行重试
+        for (const userAgent of userAgents) {
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                    logger.debug(`Validating image URL (attempt ${attempt + 1}/${maxRetries + 1}): ${url.substring(0, 100)}...`);
+                    
+                    const response = await axios.head(url, {
+                        timeout,
+                        headers: {
+                            'User-Agent': userAgent,
+                            'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                            'Accept-Encoding': 'gzip, deflate, br',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                            'Cache-Control': 'no-cache',
+                            'Pragma': 'no-cache'
+                        },
+                        validateStatus: function (status) {
+                            // 只接受 2xx 状态码
+                            return status >= 200 && status < 300;
+                        }
+                    });
+
+                    // 检查响应状态
+                    if (response.status >= 200 && response.status < 300) {
+                        const contentType = response.headers['content-type']?.toLowerCase() || '';
+                        const contentLength = parseInt(response.headers['content-length'] || '0');
+
+                        // 严格的内容类型检查
+                        const isValidContentType = (
+                            contentType.startsWith('image/') ||
+                            contentType.includes('octet-stream') ||
+                            contentType === '' // 某些CDN不返回Content-Type
+                        );
+
+                        // 检查文件大小 - 过小的文件可能是错误页面
+                        const isValidSize = contentLength === 0 || contentLength >= 100; // 允许未知大小或合理大小
+
+                        if (isValidContentType && isValidSize) {
+                            logger.debug(`Image URL validation successful: ${url.substring(0, 100)}... (${contentType}, ${contentLength} bytes)`);
+                            return true;
+                        } else {
+                            logger.warn(`Image URL validation failed - invalid content: ${url.substring(0, 100)}... (${contentType}, ${contentLength} bytes)`);
+                            // 继续尝试下一个User-Agent或重试
+                            continue;
+                        }
+                    }
+
+                } catch (error: any) {
+                    if (attempt < maxRetries) {
+                        logger.debug(`Image validation attempt ${attempt + 1} failed, retrying: ${error.message}`);
+                        // 添加延迟后重试
+                        await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+                        continue;
+                    }
+                    
+                    // 记录具体的错误类型
+                    if (error.response) {
+                        const status = error.response.status;
+                        logger.warn(`Image URL returned HTTP ${status}: ${url.substring(0, 100)}...`);
+                        
+                        // 对于明确的错误状态，直接返回false
+                        if (status === 404 || status === 403 || status === 410 || status >= 500) {
+                            return false;
+                        }
+                    } else if (error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+                        logger.warn(`Image URL domain not found or connection refused: ${url.substring(0, 100)}...`);
+                        return false;
+                    } else if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+                        logger.warn(`Image URL request timeout: ${url.substring(0, 100)}...`);
+                        // 超时可能是临时问题，继续尝试下一个User-Agent
+                        continue;
+                    }
+                    
+                    logger.debug(`Image validation error: ${error.message}`);
+                }
+            }
+        }
+
+        // 如果所有尝试都失败了，进行最后的格式检查
+        // 对于某些已知可靠的域名和格式，给予更多信任
         const trustedDomains = [
-            'feedonomics.com',
-            'shopifycdn.com',
-            'shopify.com',
             'amazonaws.com',
-            'cloudinary.com',
+            'cloudinary.com', 
             'imagekit.io',
             'unsplash.com',
             'pexels.com'
         ];
 
-        if (trustedDomains.some(domain => url.includes(domain))) {
-            logger.debug(`Trusted domain detected, skipping validation: ${url}`);
-            return true;
-        }
-
-        // 基本URL格式检查 - 如果看起来像图片URL就认为有效
         const imageExtensions = /\.(jpg|jpeg|png|gif|webp|svg|bmp|tiff)(\?.*)?$/i;
-        if (imageExtensions.test(url)) {
-            logger.debug(`URL has image extension, considering valid: ${url}`);
+        const hasTrustedDomain = trustedDomains.some(domain => url.includes(domain));
+        const hasImageExtension = imageExtensions.test(url);
+
+        if (hasTrustedDomain && hasImageExtension) {
+            logger.debug(`Image URL has trusted domain and valid extension, considering valid: ${url.substring(0, 100)}...`);
             return true;
         }
 
-        // 对于其他URL，进行轻量级验证
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-            try {
-                const response = await axios.head(url, {
-                    timeout,
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    },
-                    validateStatus: function (status) {
-                        // 接受更多的状态码作为有效响应
-                        return status >= 200 && status < 400;
-                    }
-                });
-
-                if (response.status >= 200 && response.status < 300) {
-                    const contentType = response.headers['content-type']?.toLowerCase() || '';
-
-                    // 更宽松的内容类型检查
-                    if (contentType.startsWith('image/') ||
-                        contentType.includes('octet-stream') ||
-                        contentType === '' ||
-                        contentType.includes('binary')) {
-
-                        logger.debug(`Image URL validated: ${url} (${contentType})`);
-                        return true;
-                    } else {
-                        logger.debug(`Non-image content type but may still be valid: ${url} (${contentType})`);
-                        // 即使不是图片内容类型，也可能是有效的图片URL（某些服务器配置问题）
-                        return true;
-                    }
-                }
-
-                // 如果HEAD请求失败，不再重试，直接认为URL可能有效
-                // 某些服务器不支持HEAD请求
-                logger.debug(`HEAD request failed but URL may still be valid: ${url}`);
-                return true;
-
-            } catch (error) {
-                if (attempt < maxRetries) {
-                    logger.debug(`Request error, retrying: ${error}`);
-                    continue;
-                }
-
-                // 网络错误不代表图片无效，可能是临时性问题
-                logger.debug(`Network error during validation, but URL may still be valid: ${url}`);
+        // 对于shopify CDN，由于可能存在缓存和权限问题，需要特殊处理
+        if (url.includes('shopifycdn.com') || url.includes('shopify.com')) {
+            logger.warn(`Shopify CDN image failed validation, but may be accessible to Shopify: ${url.substring(0, 100)}...`);
+            // 对于shopify CDN，我们更宽松一些，但仍然要求有图片扩展名
+            if (hasImageExtension) {
                 return true;
             }
         }
 
-        // 默认情况下认为URL有效，让Shopify来决定是否能使用
-        return true;
+        logger.warn(`Image URL validation failed after all attempts: ${url.substring(0, 100)}...`);
+        return false;
     }
 
     /**

@@ -31,6 +31,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
             system: {
                 defaultProductLimit: parseInt(process.env.DEFAULT_PRODUCT_LIMIT || '50'),
                 skipImageValidation: process.env.SKIP_IMAGE_VALIDATION === 'true',
+                strictImageValidation: process.env.STRICT_IMAGE_VALIDATION !== 'false',
                 defaultInventoryQuantity: parseInt(process.env.SHOPIFY_DEFAULT_PRODUCT_INVENTORY || '99'),
                 logLevel: process.env.LOG_LEVEL || 'info',
                 nodeEnv: process.env.NODE_ENV || 'development'
@@ -61,6 +62,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
             shopifyAccessToken,
             defaultProductLimit,
             skipImageValidation,
+            strictImageValidation,
             defaultInventoryQuantity,
             autoImportEnabled,
             importSchedule,
@@ -76,6 +78,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
             hasShopifyToken: !!shopifyAccessToken,
             defaultProductLimit,
             skipImageValidation,
+            strictImageValidation,
             defaultInventoryQuantity
         });
 
@@ -129,6 +132,10 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
         if (skipImageValidation !== undefined) {
             envVars['SKIP_IMAGE_VALIDATION'] = skipImageValidation.toString();
             process.env.SKIP_IMAGE_VALIDATION = skipImageValidation.toString();
+        }
+        if (strictImageValidation !== undefined) {
+            envVars['STRICT_IMAGE_VALIDATION'] = strictImageValidation.toString();
+            process.env.STRICT_IMAGE_VALIDATION = strictImageValidation.toString();
         }
         if (defaultInventoryQuantity !== undefined) {
             envVars['SHOPIFY_DEFAULT_PRODUCT_INVENTORY'] = defaultInventoryQuantity.toString();

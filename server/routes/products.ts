@@ -6,7 +6,9 @@ import { ProductRetriever } from '@server/services/ProductRetriever';
 import { ApiResponse, PaginatedResponse, UnifiedProduct, ProductFilters } from '@shared/types/index';
 
 const router = Router();
-const productRetriever = new ProductRetriever();
+const skipImageValidation = process.env.SKIP_IMAGE_VALIDATION === 'true';
+const strictImageValidation = process.env.STRICT_IMAGE_VALIDATION !== 'false'; // 默认为true
+const productRetriever = new ProductRetriever(skipImageValidation, strictImageValidation);
 
 // 应用会话验证中间件到所有路由
 router.use(verifyShopifySession);
