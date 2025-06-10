@@ -28,6 +28,7 @@ import dashboardRoutes from './routes/dashboard';
 import settingsRoutes from './routes/settings';
 import webhookRoutes from './routes/webhooks';
 import webhookManagementRoutes from './routes/webhookManagement';
+import cjAffiliateRoutes from './routes/cjAffiliate';
 
 // Import middleware
 import { errorHandler } from './middleware/errorHandler';
@@ -484,6 +485,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/webhook-management', webhookManagementRoutes);
+app.use('/api/cj-affiliate', cjAffiliateRoutes);
 
 // 注意：静态文件服务现在在 startServer 函数中设置
 

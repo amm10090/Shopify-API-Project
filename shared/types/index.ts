@@ -18,6 +18,7 @@ export interface UnifiedProduct {
     lastUpdated: Date;
     keywordsMatched?: string[];
     sku?: string;
+    adId?: string; // CJ广告ID
 }
 
 export interface Brand {
@@ -88,6 +89,7 @@ export interface CJProduct {
     googleProductCategory?: {
         name: string;
     };
+    adId?: string; // 广告ID
 }
 
 export interface CJFetchParams {

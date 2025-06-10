@@ -3,6 +3,7 @@ import { logger } from '@server/utils/logger';
 import { UnifiedProduct, CJProduct, PepperjamProduct, CJFetchParams, PepperjamFetchParams } from '@shared/types/index';
 import { cjApiLimitChecker, pepperjamApiLimitChecker } from '@server/config/apiLimits';
 import { CJ_API_LIMITS } from '@server/config/apiLimits';
+import { buildCJAffiliateUrl, validateCJEnvironment } from '@server/config/cjAffiliate';
 
 export class ProductRetriever {
     private skipImageValidation: boolean;
@@ -14,13 +15,37 @@ export class ProductRetriever {
 
         // 检查环境变量配置
         this.checkEnvironmentVariables();
+        
+        // 验证CJ联盟配置
+        this.validateCJConfiguration();
+    }
+
+    /**
+     * 验证CJ联盟配置
+     */
+    private validateCJConfiguration(): void {
+        const validation = validateCJEnvironment();
+        
+        if (!validation.valid) {
+            logger.error('CJ联盟配置验证失败:');
+            validation.errors.forEach(error => logger.error(`  - ${error}`));
+        }
+        
+        if (validation.warnings.length > 0) {
+            logger.warn('CJ联盟配置警告:');
+            validation.warnings.forEach(warning => logger.warn(`  - ${warning}`));
+        }
+        
+        if (validation.valid) {
+            logger.info('CJ联盟配置验证通过');
+        }
     }
 
     /**
      * 检查必要的环境变量是否配置
      */
     private checkEnvironmentVariables(): void {
-        const cjConfigured = !!(process.env.CJ_API_TOKEN && (process.env.CJ_CID || process.env.BRAND_CID));
+        const cjConfigured = !!(process.env.CJ_API_TOKEN && process.env.CJ_CID && process.env.CJ_PID);
         const pepperjamConfigured = !!(process.env.ASCEND_API_KEY || process.env.PEPPERJAM_API_KEY);
 
         logger.info(`API Configuration Status:`);
@@ -28,7 +53,11 @@ export class ProductRetriever {
         logger.info(`- Pepperjam API: ${pepperjamConfigured ? 'Configured' : 'Missing credentials'}`);
 
         if (!cjConfigured) {
-            logger.warn(`CJ API not properly configured. Missing: ${!process.env.CJ_API_TOKEN ? 'CJ_API_TOKEN ' : ''}${!(process.env.CJ_CID || process.env.BRAND_CID) ? 'CJ_CID/BRAND_CID' : ''}`);
+            const missing = [];
+            if (!process.env.CJ_API_TOKEN) missing.push('CJ_API_TOKEN');
+            if (!process.env.CJ_CID) missing.push('CJ_CID');
+            if (!process.env.CJ_PID) missing.push('CJ_PID');
+            logger.warn(`CJ API not properly configured. Missing: ${missing.join(', ')}`);
         }
 
         if (!pepperjamConfigured) {
@@ -131,6 +160,46 @@ export class ProductRetriever {
     }
 
     /**
+     * 构建CJ联盟URL - 使用adId的dpbolvw格式
+     */
+    private async buildCJAffiliateUrl(
+        originalLink: string,
+        adId: string,
+        productId: string,
+        productSku?: string
+    ): Promise<string> {
+        try {
+            // 检查是否有adId
+            if (!adId) {
+                logger.warn(`Product ${productId} missing adId, using original link`);
+                return originalLink;
+            }
+
+            // 使用简化的dpbolvw格式，以adId为第一个参数
+            const productIdentifier = productSku || productId;
+            
+            const affiliateUrl = await buildCJAffiliateUrl(
+                originalLink,
+                adId,
+                productIdentifier
+            );
+            
+            // 验证生成的URL是否为有效的CJ联盟URL
+            if (affiliateUrl && affiliateUrl !== originalLink && affiliateUrl.includes('dpbolvw.net')) {
+                logger.debug(`Successfully created CJ affiliate URL for product ${productIdentifier} with adId ${adId}`);
+                return affiliateUrl;
+            } else {
+                logger.warn(`Failed to create valid CJ affiliate URL for product ${productIdentifier}, using original link`);
+                return originalLink;
+            }
+            
+        } catch (error) {
+            logger.error(`Error constructing CJ affiliate URL for product ${productId}: ${error}. Using original link.`);
+            return originalLink;
+        }
+    }
+
+    /**
      * 将CJ产品转换为UnifiedProduct
      */
     private async cjProductToUnified(
@@ -138,61 +207,27 @@ export class ProductRetriever {
         brandName: string,
         sourceApiName: string
     ): Promise<UnifiedProduct | null> {
-        const cjAdvertiserId = String(cjProduct.advertiserId || ''); // For debugging or specific logic
+        const cjAdvertiserId = String(cjProduct.advertiserId || '');
         const cjAdvertiserName = cjProduct.advertiserName || 'Unknown Advertiser';
         const cjProductId = cjProduct.id || 'Unknown ID';
         const productName = cjProduct.name || `Product ID ${cjProductId}`;
 
         const cjLink = cjProduct.link || '';
-        let cjBuyUrl = cjProduct.buyUrl || '';
 
-        // Get PID (CJ_CID or BRAND_CID) from environment variables
-        const publisherId = process.env.CJ_CID || process.env.BRAND_CID;
+        // 使用新的联盟URL构建方法，传入adId而不是advertiserId
+        const affiliateUrl = await this.buildCJAffiliateUrl(
+            cjLink,
+            cjProduct.adId, // 使用产品的adId
+            cjProductId,
+            cjProduct.sku // 如果API提供SKU则使用，否则使用产品ID
+        );
 
-        if (!cjBuyUrl && cjLink && publisherId && cjAdvertiserId) {
-            // buyUrl is missing, but we have the target link (cjLink), publisher ID (publisherId), and advertiser ID (cjAdvertiserId)
-            // Attempt to construct a CJ tracking link
-            // Use dpbolvw.net as shown in the example URL
-            // Ensure the target URL is properly encoded
-            const encodedTargetUrl = encodeURIComponent(cjLink);
-            
-            // Build the tracking link with optional SKU parameter
-            let constructedBuyUrl = `https://www.dpbolvw.net/click-${publisherId}-${cjAdvertiserId}?url=${encodedTargetUrl}`;
-            
-            // Add SKU parameter if available (improves tracking accuracy)
-            const productSku = cjProduct.sku || `${cjProduct.id}`;
-            if (productSku) {
-                constructedBuyUrl += `&cjsku=${encodeURIComponent(productSku)}`;
-            }
-
-            logger.info(`[CJ Product Processing] Missing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}). Constructed tracking link: ${constructedBuyUrl.substring(0, 150)}...`);
-            cjBuyUrl = constructedBuyUrl; // Use the constructed link
-        } else if (!cjBuyUrl) {
-            logger.warn(`[CJ Product Processing] Missing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}). Also missing data to construct tracking link (cjLink: ${!!cjLink}, publisherId: ${!!publisherId}, advertiserId: ${!!cjAdvertiserId}). Falling back to link: ${cjLink.substring(0, 100)}... This WILL LIKELY CAUSE TRACKING ISSUES.`);
+        // 记录联盟URL构建结果
+        if (affiliateUrl !== cjLink) {
+            logger.info(`[CJ Product Processing] Constructed affiliate link for "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName})`);
         } else {
-            // buyUrl exists, perform a simple check and enhance if needed
-            const cjTrackingPattern = /\/(click-|image-|impression-)[a-zA-Z0-9]+-[a-zA-Z0-9]+\//;
-            if (!cjTrackingPattern.test(cjBuyUrl) && !(cjBuyUrl.includes('dpbolvw.net') || cjBuyUrl.includes('jdoqocy.com') || cjBuyUrl.includes('tkqlhce.com') || cjBuyUrl.includes('anrdoezrs.net') || cjBuyUrl.includes('commission-junction.com'))) {
-                logger.warn(`[CJ Product Processing] Existing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}) does not appear to be a standard CJ tracking link: ${cjBuyUrl.substring(0, 150)}... This may cause tracking issues.`);
-            } else {
-                // If buyUrl exists but doesn't have SKU parameter, try to add it
-                if (cjBuyUrl && !cjBuyUrl.includes('cjsku=')) {
-                    const productSku = cjProduct.sku || `${cjProduct.id}`;
-                    if (productSku) {
-                        const separator = cjBuyUrl.includes('?') ? '&' : '?';
-                        cjBuyUrl += `${separator}cjsku=${encodeURIComponent(productSku)}`;
-                        logger.info(`[CJ Product Processing] Enhanced existing buyUrl with SKU parameter for product: "${productName}" (ID: ${cjProductId})`);
-                    }
-                }
-                
-                logger.info(`[CJ Product Processing] Using existing buyUrl for product: "${productName}" (ID: ${cjProductId}, Advertiser: ${cjAdvertiserName}): ${cjBuyUrl.substring(0, 150)}...`);
-            }
+            logger.warn(`[CJ Product Processing] Failed to construct affiliate link for "${productName}", using original link`);
         }
-
-        const affiliateUrl = cjBuyUrl || cjLink; // Prefer cjBuyUrl (either original or constructed)
-
-        const imageUrl = cjProduct.imageUrl || '';
-        let availability = true; // Default to true if not specified
 
         if (!cjProduct) {
             return null;
@@ -256,7 +291,8 @@ export class ProductRetriever {
             importStatus: 'pending',
             lastUpdated: new Date(),
             keywordsMatched: [],
-            sku
+            sku,
+            adId: cjProduct.adId // 添加广告ID
         };
     }
 
@@ -274,8 +310,11 @@ export class ProductRetriever {
             // 使用正确的CJ GraphQL API端点
             const apiUrl = 'https://ads.api.cj.com/query';
 
-            // 获取Company ID，优先使用CJ_CID，然后BRAND_CID，最后使用默认值
-            const companyId = process.env.CJ_CID || process.env.BRAND_CID || '7520009';
+            // 获取Company ID，使用CJ_CID
+            const companyId = process.env.CJ_CID;
+            if (!companyId) {
+                throw new Error('CJ_CID (Company ID) not configured. Please set CJ_CID environment variable.');
+            }
             logger.debug(`Using CJ Company ID: ${companyId}`);
 
             // 使用API限制检查器计算分页策略
@@ -315,7 +354,7 @@ export class ProductRetriever {
                 // 获取更多数据以便更好地匹配
                 const adjustedLimit = Math.min(params.limit ? params.limit * 5 : 250, 500);
 
-                // 使用与fetchCJProducts相同的GraphQL查询结构
+                // 使用与fetchCJProducts相同的GraphQL查询结构（移除不支持的字段）
                 const query = `
                     {
                         products(
@@ -337,10 +376,9 @@ export class ProductRetriever {
                                 }
                                 imageLink
                                 link
-                                buyUrl
                                 brand
                                 lastUpdated
-                                sku
+                                adId
                                 ... on Shopping {
                                     availability
                                     productType
@@ -501,8 +539,11 @@ export class ProductRetriever {
             throw new Error('CJ_API_TOKEN not found in environment variables');
         }
 
-        // 获取Company ID，优先使用CJ_CID，然后BRAND_CID，最后使用默认值
-        const companyId = process.env.CJ_CID || process.env.BRAND_CID || '7520009';
+        // 获取Company ID，使用CJ_CID
+        const companyId = process.env.CJ_CID;
+        if (!companyId) {
+            throw new Error('CJ_CID (Company ID) not configured. Please set CJ_CID environment variable.');
+        }
         logger.debug(`Using CJ Company ID: ${companyId}`);
 
         // 获取更多数据以便更好地匹配
@@ -510,7 +551,7 @@ export class ProductRetriever {
 
         logger.info(`Fetching CJ raw products for advertiser ${params.advertiserId}, limit: ${limit}${params.keywords ? `, keywords: ${params.keywords.join(', ')}` : ''}`);
 
-        // 简化的GraphQL查询，不使用searchTerm参数
+        // 简化的GraphQL查询，移除不支持的字段
         const query = `
             {
                 products(
@@ -532,10 +573,9 @@ export class ProductRetriever {
                         }
                         imageLink
                         link
-                        buyUrl
                         brand
                         lastUpdated
-                        sku
+                        adId
                         ... on Shopping {
                             availability
                             productType
