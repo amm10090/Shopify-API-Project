@@ -91,7 +91,7 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
     const [totalProducts, setTotalProducts] = useState(0);
     const [deleteModalActive, setDeleteModalActive] = useState(false);
     const [importProgress, setImportProgress] = useState<{ [key: string]: boolean }>({});
-    const [pageSize, setPageSize] = useState(20); // Ensure pageSize state exists
+    const [pageSize, setPageSize] = useState(50); // 默认显示50个产品
 
     // 添加请求标记，防止重复请求
     const isFetchingStats = useRef(false);
@@ -112,6 +112,75 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
     const [editModalActive, setEditModalActive] = useState(false);
     const [editingProduct, setEditingProduct] = useState<UnifiedProduct | null>(null);
     const [editLoading, setEditLoading] = useState(false);
+
+    // 导入进度跟踪状态
+    const [importTasks, setImportTasks] = useState<{ [taskId: string]: {
+        taskId: string;
+        status: string;
+        total: number;
+        processed: number;
+        success: number;
+        failed: number;
+        progress: number;
+        productIds: string[];
+        startTime: Date;
+    } }>({});
+
+    // 轮询导入进度
+    const pollImportProgress = useCallback(async (taskId: string) => {
+        try {
+            const response = await shopifyApi.getImportProgress(taskId);
+            if (response.success && response.data) {
+                const { status, total, processed, success, failed, progress } = response.data;
+                
+                setImportTasks(prev => ({
+                    ...prev,
+                    [taskId]: {
+                        ...prev[taskId],
+                        status,
+                        total,
+                        processed,
+                        success,
+                        failed,
+                        progress
+                    }
+                }));
+
+                // 如果任务完成，停止轮询并清理
+                if (status === 'completed' || status === 'failed') {
+                    // 延迟3秒后清理任务状态，让用户看到最终结果
+                    setTimeout(() => {
+                        setImportTasks(prev => {
+                            const newTasks = { ...prev };
+                            delete newTasks[taskId];
+                            return newTasks;
+                        });
+                    }, 3000);
+
+                    if (status === 'completed') {
+                        showToast(`Import completed: ${success} successful, ${failed} failed`);
+                        // 刷新产品列表 - 使用定时器确保状态更新后执行
+                        setTimeout(() => {
+                            window.location.reload(); // 简单的刷新方案
+                        }, 1000);
+                    } else {
+                        showToast(`Import failed: ${response.data.errorMessage || 'Unknown error'}`);
+                    }
+                } else {
+                    // 继续轮询
+                    setTimeout(() => pollImportProgress(taskId), 2000);
+                }
+            }
+        } catch (error) {
+            console.error('Error polling import progress:', error);
+            // 清理失败的任务
+            setImportTasks(prev => {
+                const newTasks = { ...prev };
+                delete newTasks[taskId];
+                return newTasks;
+            });
+        }
+    }, [showToast]);
 
     // 获取品牌列表
     const fetchBrands = useCallback(async () => {
@@ -236,32 +305,44 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
             return;
         }
 
-        setIsLoading(true);
         try {
-            const response = await shopifyApi.importToShopify(selectedProducts);
+            // 启动异步导入任务
+            const response = await shopifyApi.importToShopify(selectedProducts, 5); // 批次大小为5
 
-            if (response.success) {
-                const { success, failed, errors } = response.data;
+            if (response.success && response.data) {
+                const { taskId, total } = response.data;
+                
+                // 记录任务状态
+                setImportTasks(prev => ({
+                    ...prev,
+                    [taskId]: {
+                        taskId,
+                        status: 'running',
+                        total,
+                        processed: 0,
+                        success: 0,
+                        failed: 0,
+                        progress: 0,
+                        productIds: selectedProducts,
+                        startTime: new Date()
+                    }
+                }));
 
-                if (failed > 0) {
-                    showToast(`Import completed: ${success} successful, ${failed} failed. Check console for details.`);
-                    console.error('Import errors:', errors);
-                } else {
-                    showToast(`Successfully imported ${success} products`);
-                }
-
+                showToast(`Import task started for ${total} products. You can continue using the app while import runs in background.`);
+                
+                // 清除选择
                 setSelectedProducts([]);
-                fetchProducts(); // 刷新产品列表
+                
+                // 开始轮询进度
+                setTimeout(() => pollImportProgress(taskId), 1000);
             } else {
-                showToast(response.error || 'Failed to bulk import');
+                showToast(response.error || 'Failed to start import');
             }
         } catch (error) {
             console.error('Error during bulk import:', error);
-            showToast('Failed to bulk import');
-        } finally {
-            setIsLoading(false);
+            showToast('Failed to start import');
         }
-    }, [selectedProducts, showToast, setIsLoading, fetchProducts]);
+    }, [selectedProducts, showToast, pollImportProgress]);
 
     const handleBulkDatabaseUpdate = useCallback(async () => {
         if (selectedProducts.length === 0) {
@@ -387,31 +468,58 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
 
     const handleSingleImport = useCallback(async (productId: string) => {
         setImportProgress(prev => ({ ...prev, [productId]: true }));
-        setIsLoading(true);
         try {
-            const response = await shopifyApi.importToShopify([productId]);
+            const response = await shopifyApi.importToShopify([productId], 1);
 
-            if (response.success) {
-                const { success, failed, errors } = response.data;
-
-                if (failed > 0) {
-                    showToast(`Import failed: ${errors[0]?.error || 'Unknown error'}`);
-                } else {
-                    showToast('Product imported successfully');
-                }
-
-                fetchProducts(); // 刷新产品列表
+            if (response.success && response.data) {
+                const { taskId } = response.data;
+                
+                showToast('Product import started...');
+                
+                // 开始轮询单个产品的导入进度
+                const pollSingleProgress = async () => {
+                    try {
+                        const progressResponse = await shopifyApi.getImportProgress(taskId);
+                        if (progressResponse.success && progressResponse.data) {
+                            const { status, success, failed, errors } = progressResponse.data;
+                            
+                            if (status === 'completed') {
+                                if (failed > 0) {
+                                    showToast(`Import failed: ${errors[0]?.error || 'Unknown error'}`);
+                                                                 } else {
+                                     showToast('Product imported successfully');
+                                 }
+                                 // 刷新产品列表
+                                 setTimeout(() => {
+                                     window.location.reload();
+                                 }, 1000);
+                                 setImportProgress(prev => ({ ...prev, [productId]: false }));
+                            } else if (status === 'failed') {
+                                showToast(`Import failed: ${progressResponse.data.errorMessage || 'Unknown error'}`);
+                                setImportProgress(prev => ({ ...prev, [productId]: false }));
+                            } else {
+                                // 继续轮询
+                                setTimeout(pollSingleProgress, 1000);
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error polling single import progress:', error);
+                        setImportProgress(prev => ({ ...prev, [productId]: false }));
+                        showToast('Failed to check import progress');
+                    }
+                };
+                
+                setTimeout(pollSingleProgress, 1000);
             } else {
-                showToast(response.error || 'Failed to import product');
+                showToast(response.error || 'Failed to start import');
+                setImportProgress(prev => ({ ...prev, [productId]: false }));
             }
         } catch (error) {
             console.error('Error importing product:', error);
             showToast('Failed to import product');
-        } finally {
             setImportProgress(prev => ({ ...prev, [productId]: false }));
-            setIsLoading(false);
         }
-    }, [showToast, setIsLoading, fetchProducts]);
+    }, [showToast, fetchProducts]);
 
     // 处理已导入产品的更新
     const handleSingleUpdate = useCallback(async (productId: string) => {
@@ -1218,9 +1326,11 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                             label="Items per page"
                                             labelInline
                                             options={[
+                                                { label: '10 items', value: '10' },
                                                 { label: '20 items', value: '20' },
                                                 { label: '50 items', value: '50' },
                                                 { label: '100 items', value: '100' },
+                                                { label: '200 items', value: '200' },
                                             ]}
                                             value={String(pageSize)}
                                             onChange={(newValue) => {
@@ -1231,74 +1341,110 @@ const ProductsPage: React.FC<ProductsPageProps> = ({ showToast, setIsLoading }) 
                                     </div>
                                 </Box>
 
-                                {/* 选中产品的操作提示和批量操作 */}
-                                {selectedProducts.length > 0 && (
-                                    <Card>
-                                        <Box padding="400">
+                                                {/* 导入进度显示 */}
+                {Object.keys(importTasks).length > 0 && (
+                    <Card>
+                        <Box padding="400">
+                            <BlockStack gap="400">
+                                <Text as="h3" variant="headingSm" fontWeight="semibold">
+                                    Import Progress
+                                </Text>
+                                {Object.values(importTasks).map((task) => (
+                                    <Box key={task.taskId} padding="300" background="bg-surface-secondary" borderRadius="200">
+                                        <BlockStack gap="200">
                                             <InlineStack align="space-between">
-                                                <BlockStack gap="200">
-                                                    <Text as="h3" variant="headingSm" fontWeight="semibold">
-                                                        {selectedProducts.length} product{selectedProducts.length > 1 ? 's' : ''} selected
-                                                    </Text>
-                                                    <Text as="p" variant="bodySm" tone="subdued">
-                                                        Choose an action to perform on the selected products
-                                                    </Text>
-                                                </BlockStack>
-                                                <InlineStack gap="200">
-                                                    <Button
-                                                        variant="primary"
-                                                        icon={ImportIcon}
-                                                        onClick={handleBulkImport}
-                                                    >
-                                                        Import to Shopify
-                                                    </Button>
-                                                    <Button
-                                                        variant="secondary"
-                                                        icon={RefreshIcon}
-                                                        onClick={handleBulkDatabaseUpdate}
-                                                    >
-                                                        Update Product Data
-                                                    </Button>
-                                                    <Button
-                                                        variant="secondary"
-                                                        icon={RefreshIcon}
-                                                        onClick={handleBulkStatusSync}
-                                                    >
-                                                        Sync Status
-                                                    </Button>
-                                                    <Button
-                                                        variant="secondary"
-                                                        icon={InventoryIcon}
-                                                        onClick={handleBulkInventorySync}
-                                                    >
-                                                        Sync Inventory
-                                                    </Button>
-                                                    <Button
-                                                        variant="secondary"
-                                                        icon={ExportIcon}
-                                                        onClick={() => showToast('Export function is under development')}
-                                                    >
-                                                        Export Data
-                                                    </Button>
-                                                    <Button
-                                                        variant="secondary"
-                                                        tone="critical"
-                                                        icon={DeleteIcon}
-                                                        onClick={() => setDeleteModalActive(true)}
-                                                    >
-                                                        Delete
-                                                    </Button>
-                                                    <Button
-                                                        variant="tertiary"
-                                                        onClick={() => setSelectedProducts([])}
-                                                    >
-                                                        Clear Selection
-                                                    </Button>
-                                                </InlineStack>
+                                                <Text as="p" variant="bodySm">
+                                                    Importing {task.total} products
+                                                </Text>
+                                                <Text as="p" variant="bodySm" tone="subdued">
+                                                    {task.status === 'running' ? 'In Progress' : task.status}
+                                                </Text>
                                             </InlineStack>
-                                        </Box>
-                                    </Card>
-                                )}
+                                            <ProgressBar progress={task.progress} />
+                                            <InlineStack align="space-between">
+                                                <Text as="p" variant="bodySm" tone="subdued">
+                                                    {task.processed} / {task.total} processed
+                                                </Text>
+                                                <Text as="p" variant="bodySm" tone="subdued">
+                                                    ✅ {task.success} success, ❌ {task.failed} failed
+                                                </Text>
+                                            </InlineStack>
+                                        </BlockStack>
+                                    </Box>
+                                ))}
+                            </BlockStack>
+                        </Box>
+                    </Card>
+                )}
+
+                {/* 选中产品的操作提示和批量操作 */}
+                {selectedProducts.length > 0 && (
+                    <Card>
+                        <Box padding="400">
+                            <InlineStack align="space-between">
+                                <BlockStack gap="200">
+                                    <Text as="h3" variant="headingSm" fontWeight="semibold">
+                                        {selectedProducts.length} product{selectedProducts.length > 1 ? 's' : ''} selected
+                                    </Text>
+                                    <Text as="p" variant="bodySm" tone="subdued">
+                                        Choose an action to perform on the selected products
+                                    </Text>
+                                </BlockStack>
+                                <InlineStack gap="200">
+                                    <Button
+                                        variant="primary"
+                                        icon={ImportIcon}
+                                        onClick={handleBulkImport}
+                                    >
+                                        Import to Shopify
+                                    </Button>
+                                    <Button
+                                        variant="secondary"
+                                        icon={RefreshIcon}
+                                        onClick={handleBulkDatabaseUpdate}
+                                    >
+                                        Update Product Data
+                                    </Button>
+                                    <Button
+                                        variant="secondary"
+                                        icon={RefreshIcon}
+                                        onClick={handleBulkStatusSync}
+                                    >
+                                        Sync Status
+                                    </Button>
+                                    <Button
+                                        variant="secondary"
+                                        icon={InventoryIcon}
+                                        onClick={handleBulkInventorySync}
+                                    >
+                                        Sync Inventory
+                                    </Button>
+                                    <Button
+                                        variant="secondary"
+                                        icon={ExportIcon}
+                                        onClick={() => showToast('Export function is under development')}
+                                    >
+                                        Export Data
+                                    </Button>
+                                    <Button
+                                        variant="secondary"
+                                        tone="critical"
+                                        icon={DeleteIcon}
+                                        onClick={() => setDeleteModalActive(true)}
+                                    >
+                                        Delete
+                                    </Button>
+                                    <Button
+                                        variant="tertiary"
+                                        onClick={() => setSelectedProducts([])}
+                                    >
+                                        Clear Selection
+                                    </Button>
+                                </InlineStack>
+                            </InlineStack>
+                        </Box>
+                    </Card>
+                )}
 
                                 <Divider />
 

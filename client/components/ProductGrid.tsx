@@ -40,7 +40,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({ showToast, setIsLoadin
     const [detailModalActive, setDetailModalActive] = useState(false);
     const [selectedProduct, setSelectedProduct] = useState<UnifiedProduct | null>(null);
 
-    const limit = 20; // 每页显示的产品数量
+    const limit = 50; // 每页显示的产品数量
 
     // 获取产品数据
     const fetchProducts = useCallback(async () => {

@@ -33,7 +33,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     try {
         const {
             page = 1,
-            limit = 20,
+            limit = 50,
             brandId,
             sourceApi,
             availability,

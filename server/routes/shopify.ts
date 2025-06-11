@@ -16,11 +16,11 @@ const shopifyService = new ShopifyService();
 router.use(verifyShopifySession);
 
 /**
- * 导入产品到Shopify
+ * 导入产品到Shopify - 优化版，支持并发导入
  */
 router.post('/import', async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const { productIds, useProductSetSync = false } = req.body;
+        const { productIds, useProductSetSync = false, batchSize = 5 } = req.body;
 
         if (!productIds || !Array.isArray(productIds)) {
             res.status(400).json({
@@ -29,12 +29,6 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
             });
             return;
         }
-
-        const results = {
-            success: 0,
-            failed: 0,
-            errors: [] as any[]
-        };
 
         // 获取当前会话
         const session = (req as any).shopifySession;
@@ -56,170 +50,364 @@ router.post('/import', async (req: Request, res: Response, next: NextFunction) =
             return;
         }
 
-        logger.info(`Starting bulk import for shop: ${session.shop}, products: ${productIds.length}, useProductSetSync: ${useProductSetSync}`);
+        // 获取第一个产品的品牌ID作为导入任务的品牌ID
+        let taskBrandId = null;
+        if (productIds.length > 0) {
+            const firstProduct = await prisma.product.findUnique({
+                where: { id: productIds[0] },
+                select: { brandId: true }
+            });
+            taskBrandId = firstProduct?.brandId || null;
+        }
 
-        for (const productId of productIds) {
-            try {
-                // 获取产品信息
-                const product = await prisma.product.findUnique({
-                    where: { id: productId },
-                    include: { brand: true }
-                });
-
-                if (!product) {
-                    results.failed++;
-                    results.errors.push({
-                        productId,
-                        error: 'Product not found'
-                    });
-                    continue;
+        // 如果没有找到有效的brandId，创建一个通用的"系统"品牌记录
+        if (!taskBrandId) {
+            const systemBrand = await prisma.brand.upsert({
+                where: { id: 'system-bulk-import' },
+                update: {},
+                create: {
+                    id: 'system-bulk-import',
+                    name: 'System Bulk Import',
+                    apiType: 'CJ', // 使用有效的枚举值
+                    apiId: 'bulk-import',
+                    isActive: true
                 }
+            });
+            taskBrandId = systemBrand.id;
+        }
 
-                if (product.importStatus === 'IMPORTED') {
-                    logger.info(`Product ${productId} already imported, skipping`);
-                    results.success++;
-                    continue;
-                }
-
-                // 转换为UnifiedProduct格式
-                const unifiedProduct = {
-                    id: product.id,
-                    sourceApi: product.sourceApi.toLowerCase() as 'cj' | 'pepperjam',
-                    sourceProductId: product.sourceProductId,
-                    brandName: product.brand.name,
-                    title: product.title,
-                    description: product.description,
-                    price: product.price,
-                    salePrice: product.salePrice || undefined,
-                    currency: product.currency,
-                    imageUrl: product.imageUrl,
-                    affiliateUrl: product.affiliateUrl,
-                    categories: product.categories,
-                    availability: product.availability,
-                    shopifyProductId: product.shopifyProductId || undefined,
-                    importStatus: product.importStatus.toLowerCase() as 'pending' | 'imported' | 'failed',
-                    lastUpdated: product.lastUpdated,
-                    keywordsMatched: product.keywordsMatched,
-                    sku: product.sku || undefined
-                };
-
-                // 使用productSet同步方法或标准方法导入产品
-                let shopifyProduct;
-                if (useProductSetSync) {
-                    // 使用新的产品模型的productSet同步方法
-                    shopifyProduct = await shopifyService.syncProductWithProductSet(
-                        session,
-                        unifiedProduct,
-                        'draft'
-                    );
-                } else {
-                    // 检查是否已存在于Shopify
-                    if (product.shopifyProductId) {
-                        // 更新现有产品
-                        shopifyProduct = await shopifyService.updateProduct(
-                            session,
-                            product.shopifyProductId,
-                            unifiedProduct
-                        );
-                    } else {
-                        // 检查SKU是否已存在 - 智能选择API类型
-                        const existingProduct = await shopifyService.getProductBySku(session, product.sku!);
-                        if (existingProduct) {
-                            shopifyProduct = await shopifyService.updateProduct(
-                                session,
-                                existingProduct.id,
-                                unifiedProduct
-                            );
-                        } else {
-                            // 创建新产品 - 智能选择API类型
-                            shopifyProduct = await shopifyService.createProduct(
-                                session,
-                                unifiedProduct,
-                                'draft'
-                            );
-                        }
-                    }
-                }
-
-                if (shopifyProduct) {
-                    // 创建或获取品牌集合
-                    const collectionTitle = `${product.brand.name} - API Products - Draft`;
-                    const collection = await shopifyService.getOrCreateCollection(
-                        session,
-                        collectionTitle,
-                        undefined,
-                        false,
-                        `Automatically synced products for ${product.brand.name} from ${product.sourceApi.toUpperCase()} API.`
-                    );
-
-                    // 添加产品到集合
-                    if (collection) {
-                        await shopifyService.addProductToCollection(
-                            session,
-                            String(shopifyProduct.id),
-                            String(collection.id)
-                        );
-                    }
-
-                    // 设置联盟链接元字段（如果还没有设置）
-                    if (!useProductSetSync) {
-                        await shopifyService.setProductMetafield(
-                            session,
-                            String(shopifyProduct.id),
-                            'custom',
-                            'affiliate_link',
-                            product.affiliateUrl,
-                            'url'
-                        );
-                    }
-
-                    // 更新数据库中的产品状态
-                    await prisma.product.update({
-                        where: { id: productId },
-                        data: {
-                            shopifyProductId: String(shopifyProduct.id),
-                            importStatus: 'IMPORTED',
-                            lastUpdated: new Date()
-                        }
-                    });
-
-                    results.success++;
-                    logger.info(`Successfully imported product ${productId} to Shopify (${shopifyProduct.id})`);
-                } else {
-                    results.failed++;
-                    results.errors.push({
-                        productId,
-                        error: 'Failed to create/update Shopify product'
-                    });
-                }
-
-            } catch (error) {
-                results.failed++;
-                results.errors.push({
-                    productId,
-                    error: error instanceof Error ? error.message : 'Unknown error'
-                });
-                logger.error(`Error importing product ${productId}:`, error);
-
-                // 标记产品为失败状态
-                try {
-                    await prisma.product.update({
-                        where: { id: productId },
-                        data: {
-                            importStatus: 'FAILED',
-                            lastUpdated: new Date()
-                        }
-                    });
-                } catch (updateError) {
-                    logger.error(`Error updating product status for ${productId}:`, updateError);
+        // 创建导入任务记录
+        const importTask = await prisma.importJob.create({
+            data: {
+                brandId: taskBrandId,
+                status: 'RUNNING',
+                filters: {
+                    productIds,
+                    batchSize,
+                    useProductSetSync
                 }
             }
+        });
+
+        logger.info(`Starting concurrent import for shop: ${session.shop}, products: ${productIds.length}, useProductSetSync: ${useProductSetSync}, batchSize: ${batchSize}, taskId: ${importTask.id}`);
+
+        // 立即返回任务ID，不等待导入完成
+        res.json({
+            success: true,
+            data: {
+                taskId: importTask.id,
+                status: 'running',
+                total: productIds.length,
+                processed: 0,
+                success: 0,
+                failed: 0,
+                errors: []
+            },
+            message: 'Import task started successfully. Use the task ID to check progress.'
+        });
+
+        // 异步执行导入过程
+        setImmediate(async () => {
+            const results = {
+                success: 0,
+                failed: 0,
+                errors: [] as any[]
+            };
+
+            try {
+                // 批量处理产品，避免一次性处理太多产品
+                const chunks = [];
+                for (let i = 0; i < productIds.length; i += batchSize) {
+                    chunks.push(productIds.slice(i, i + batchSize));
+                }
+
+                logger.info(`Processing ${productIds.length} products in ${chunks.length} batches of ${batchSize}`);
+
+                // 处理每个批次
+                for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+                    const chunk = chunks[chunkIndex];
+                    
+                    logger.info(`Processing batch ${chunkIndex + 1}/${chunks.length} with ${chunk.length} products`);
+
+                    // 并发处理当前批次的产品
+                    const chunkPromises = chunk.map(async (productId: string) => {
+                        try {
+                            // 获取产品信息
+                            const product = await prisma.product.findUnique({
+                                where: { id: productId },
+                                include: { brand: true }
+                            });
+
+                            if (!product) {
+                                return {
+                                    success: false,
+                                    productId,
+                                    error: 'Product not found'
+                                };
+                            }
+
+                            if (product.importStatus === 'IMPORTED') {
+                                logger.info(`Product ${productId} already imported, skipping`);
+                                return {
+                                    success: true,
+                                    productId,
+                                    skipped: true
+                                };
+                            }
+
+                            // 转换为UnifiedProduct格式
+                            const unifiedProduct = {
+                                id: product.id,
+                                sourceApi: product.sourceApi.toLowerCase() as 'cj' | 'pepperjam',
+                                sourceProductId: product.sourceProductId,
+                                brandName: product.brand.name,
+                                title: product.title,
+                                description: product.description,
+                                price: product.price,
+                                salePrice: product.salePrice || undefined,
+                                currency: product.currency,
+                                imageUrl: product.imageUrl,
+                                affiliateUrl: product.affiliateUrl,
+                                categories: product.categories,
+                                availability: product.availability,
+                                shopifyProductId: product.shopifyProductId || undefined,
+                                importStatus: product.importStatus.toLowerCase() as 'pending' | 'imported' | 'failed',
+                                lastUpdated: product.lastUpdated,
+                                keywordsMatched: product.keywordsMatched,
+                                sku: product.sku || undefined
+                            };
+
+                            // 使用productSet同步方法或标准方法导入产品
+                            let shopifyProduct;
+                            if (useProductSetSync) {
+                                shopifyProduct = await shopifyService.syncProductWithProductSet(
+                                    session,
+                                    unifiedProduct,
+                                    'draft'
+                                );
+                            } else {
+                                // 检查是否已存在于Shopify
+                                if (product.shopifyProductId) {
+                                    shopifyProduct = await shopifyService.updateProduct(
+                                        session,
+                                        product.shopifyProductId,
+                                        unifiedProduct
+                                    );
+                                } else {
+                                    // 检查SKU是否已存在
+                                    const existingProduct = await shopifyService.getProductBySku(session, product.sku!);
+                                    if (existingProduct) {
+                                        shopifyProduct = await shopifyService.updateProduct(
+                                            session,
+                                            existingProduct.id,
+                                            unifiedProduct
+                                        );
+                                    } else {
+                                        shopifyProduct = await shopifyService.createProduct(
+                                            session,
+                                            unifiedProduct,
+                                            'draft'
+                                        );
+                                    }
+                                }
+                            }
+
+                            if (shopifyProduct) {
+                                // 创建或获取品牌集合
+                                const collectionTitle = `${product.brand.name} - API Products - Draft`;
+                                const collection = await shopifyService.getOrCreateCollection(
+                                    session,
+                                    collectionTitle,
+                                    undefined,
+                                    false,
+                                    `Automatically synced products for ${product.brand.name} from ${product.sourceApi.toUpperCase()} API.`
+                                );
+
+                                // 添加产品到集合
+                                if (collection) {
+                                    await shopifyService.addProductToCollection(
+                                        session,
+                                        String(shopifyProduct.id),
+                                        String(collection.id)
+                                    );
+                                }
+
+                                // 设置联盟链接元字段（如果还没有设置）
+                                if (!useProductSetSync) {
+                                    await shopifyService.setProductMetafield(
+                                        session,
+                                        String(shopifyProduct.id),
+                                        'custom',
+                                        'affiliate_link',
+                                        product.affiliateUrl,
+                                        'url'
+                                    );
+                                }
+
+                                // 更新数据库中的产品状态
+                                await prisma.product.update({
+                                    where: { id: productId },
+                                    data: {
+                                        shopifyProductId: String(shopifyProduct.id),
+                                        importStatus: 'IMPORTED',
+                                        lastUpdated: new Date()
+                                    }
+                                });
+
+                                logger.info(`Successfully imported product ${productId} to Shopify (${shopifyProduct.id})`);
+                                return {
+                                    success: true,
+                                    productId,
+                                    shopifyProductId: shopifyProduct.id
+                                };
+                            } else {
+                                return {
+                                    success: false,
+                                    productId,
+                                    error: 'Failed to create/update Shopify product'
+                                };
+                            }
+
+                        } catch (error) {
+                            logger.error(`Error importing product ${productId}:`, error);
+
+                            // 标记产品为失败状态
+                            try {
+                                await prisma.product.update({
+                                    where: { id: productId },
+                                    data: {
+                                        importStatus: 'FAILED',
+                                        lastUpdated: new Date()
+                                    }
+                                });
+                            } catch (updateError) {
+                                logger.error(`Error updating product status for ${productId}:`, updateError);
+                            }
+
+                            return {
+                                success: false,
+                                productId,
+                                error: error instanceof Error ? error.message : 'Unknown error'
+                            };
+                        }
+                    });
+
+                    // 等待当前批次完成
+                    const chunkResults = await Promise.all(chunkPromises);
+
+                    // 统计结果
+                    chunkResults.forEach(result => {
+                        if (result.success) {
+                            results.success++;
+                        } else {
+                            results.failed++;
+                            results.errors.push({
+                                productId: result.productId,
+                                error: result.error
+                            });
+                        }
+                    });
+
+                                         // 更新导入任务进度
+                     const processed = (chunkIndex + 1) * batchSize;
+                     await prisma.importJob.update({
+                         where: { id: importTask.id },
+                         data: {
+                             productsFound: productIds.length,
+                             productsImported: results.success,
+                             filters: {
+                                 ...(importTask.filters as any),
+                                 processed: Math.min(processed, productIds.length),
+                                 errors: results.errors
+                             }
+                         }
+                     });
+
+                    logger.info(`Batch ${chunkIndex + 1}/${chunks.length} completed. Progress: ${Math.min(processed, productIds.length)}/${productIds.length}`);
+
+                    // 在批次之间添加短暂延迟，避免过载
+                    if (chunkIndex < chunks.length - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                }
+
+                                 // 更新最终状态
+                 await prisma.importJob.update({
+                     where: { id: importTask.id },
+                     data: {
+                         status: 'COMPLETED',
+                         productsFound: productIds.length,
+                         productsImported: results.success,
+                         completedAt: new Date(),
+                         filters: {
+                             ...(importTask.filters as any),
+                             final_results: results
+                         }
+                     }
+                 });
+
+                logger.info(`Import task ${importTask.id} completed: ${results.success} successful, ${results.failed} failed`);
+
+            } catch (error) {
+                logger.error(`Import task ${importTask.id} failed:`, error);
+
+                await prisma.importJob.update({
+                    where: { id: importTask.id },
+                    data: {
+                        status: 'FAILED',
+                        completedAt: new Date(),
+                        errorMessage: error instanceof Error ? error.message : 'Unknown error'
+                    }
+                });
+            }
+        });
+
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * 获取导入任务进度
+ */
+router.get('/import/:taskId/progress', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { taskId } = req.params;
+
+        const importTask = await prisma.importJob.findUnique({
+            where: { id: taskId }
+        });
+
+        if (!importTask) {
+            res.status(404).json({
+                success: false,
+                error: 'Import task not found'
+            });
+            return;
         }
+
+        const filters = importTask.filters as any;
+        const total = importTask.productsFound || filters?.productIds?.length || 0;
+        const processed = filters?.processed || 0;
+        const success = importTask.productsImported || 0;
+        const errors = filters?.errors || [];
+        const failed = errors.length;
 
         res.json({
             success: true,
-            data: results,
-            message: `Import completed: ${results.success} successful, ${results.failed} failed`
+            data: {
+                taskId: importTask.id,
+                status: importTask.status.toLowerCase(),
+                total,
+                processed,
+                success,
+                failed,
+                errors,
+                progress: total > 0 ? Math.round((processed / total) * 100) : 0,
+                createdAt: importTask.createdAt,
+                completedAt: importTask.completedAt,
+                errorMessage: importTask.errorMessage
+            }
         });
 
     } catch (error) {

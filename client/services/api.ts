@@ -180,9 +180,43 @@ export const importApi = {
 
 // Shopify相关API
 export const shopifyApi = {
-    // 导入产品到Shopify
-    importToShopify: async (productIds: string[]): Promise<ApiResponse<any>> => {
-        return api.post('/shopify/import', { productIds });
+    // 导入产品到Shopify (异步)
+    importToShopify: async (productIds: string[], batchSize: number = 5): Promise<ApiResponse<{
+        taskId: string;
+        status: string;
+        total: number;
+        processed: number;
+        success: number;
+        failed: number;
+        errors: any[];
+    }>> => {
+        return api.post('/shopify/import', { 
+            productIds, 
+            batchSize,
+            useProductSetSync: false 
+        });
+    },
+
+    // 获取导入任务进度
+    getImportProgress: async (taskId: string): Promise<ApiResponse<{
+        taskId: string;
+        status: string;
+        total: number;
+        processed: number;
+        success: number;
+        failed: number;
+        errors: any[];
+        progress: number;
+        createdAt: string;
+        completedAt?: string;
+        errorMessage?: string;
+    }>> => {
+        return api.get(`/shopify/import/${taskId}/progress`);
+    },
+
+    // 同步单个产品
+    syncProduct: async (productId: string): Promise<ApiResponse<void>> => {
+        return api.post(`/shopify/sync/${productId}`);
     },
 
     // 更新已导入的产品
@@ -190,19 +224,33 @@ export const shopifyApi = {
         return api.post('/shopify/update', { productIds });
     },
 
-    // 获取Shopify连接状态
-    getConnectionStatus: async (): Promise<ApiResponse<any>> => {
-        return api.get('/shopify/status');
+    // 批量设置产品状态
+    setProductStatus: async (productIds: string[], status: 'active' | 'draft'): Promise<ApiResponse<any>> => {
+        return api.post('/shopify/bulk-status', { productIds, status });
     },
 
     // 同步产品状态
-    syncProductStatus: async (productIds?: string[]): Promise<ApiResponse<any>> => {
+    syncProductStatus: async (productIds: string[]): Promise<ApiResponse<any>> => {
         return api.post('/shopify/sync-status', { productIds });
     },
 
-    // 同步产品库存
-    syncInventory: async (productIds?: string[]): Promise<ApiResponse<any>> => {
+    // 同步库存
+    syncInventory: async (productIds: string[]): Promise<ApiResponse<any>> => {
         return api.post('/shopify/sync-inventory', { productIds });
+    },
+
+    // 获取Shopify连接状态
+    getStatus: async (): Promise<ApiResponse<{
+        connected: boolean;
+        storeName?: string;
+        productStats: {
+            pending: number;
+            imported: number;
+            failed: number;
+        };
+        lastCheck: string;
+    }>> => {
+        return api.get('/shopify/status');
     },
 };
 

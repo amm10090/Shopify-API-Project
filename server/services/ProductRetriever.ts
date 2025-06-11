@@ -362,7 +362,7 @@ export class ProductRetriever {
     }
 
     /**
-     * 从CJ API获取产品
+     * 从CJ API获取产品 - 优化版，支持并发分页
      */
     async fetchCJProducts(params: CJFetchParams): Promise<UnifiedProduct[]> {
         const { advertiserId, keywords = [], limit = 70, offset = 0, maxPages = 10 } = params;
@@ -388,13 +388,15 @@ export class ProductRetriever {
 
             logger.debug(`CJ API pagination plan: ${paginationPlan.totalPages} pages, estimated total: ${paginationPlan.estimatedTotal}`);
 
-            let allProducts: any[] = [];
+            // 创建并发分页任务
+            const concurrentPageTasks: Promise<any[]>[] = [];
             let pageCount = 0;
 
-            // 分页获取数据
-            for (const page of paginationPlan.pages) {
+            // 限制并发页面数量以避免API过载
+            const maxConcurrentPages = Math.min(maxPages, 3); // 最多3个并发页面
+            
+            for (const page of paginationPlan.pages.slice(0, maxConcurrentPages)) {
                 if (pageCount >= maxPages) {
-                    logger.info(`Reached maximum pages limit (${maxPages}), stopping pagination`);
                     break;
                 }
 
@@ -402,7 +404,7 @@ export class ProductRetriever {
                 const validation = cjApiLimitChecker.validateRequest(page.limit, page.offset);
                 if (!validation.valid) {
                     logger.warn(`Invalid request parameters: ${validation.message}`);
-                    break;
+                    continue;
                 }
 
                 if (validation.message) {
@@ -457,55 +459,31 @@ export class ProductRetriever {
                     }
                 `;
 
-                logger.debug(`CJ API request page ${pageCount + 1}: offset=${page.offset}, limit=${currentLimit}`);
-                logger.debug(`CJ API query:`, query);
-
-                const response = await axios.post(apiUrl,
-                    { query },
-                    {
-                        headers: {
-                            'Authorization': `Bearer ${process.env.CJ_API_TOKEN}`,
-                            'Content-Type': 'application/json'
-                        },
-                        timeout: cjApiLimitChecker.getTimeout()
-                    }
-                );
-
-                logger.debug(`CJ API response status: ${response.status}`);
-
-                if (response.data?.errors) {
-                    logger.error(`CJ API returned errors:`, response.data.errors);
-                    break;
-                }
-
-                const products = response.data?.data?.products?.resultList || [];
-                const totalCount = response.data?.data?.products?.totalCount || 0;
-                const returnedCount = response.data?.data?.products?.count || 0;
-
-                logger.debug(`CJ API page response: returned ${products.length} products, total available: ${totalCount}`);
-
-                if (products.length === 0) {
-                    logger.info(`No more products available from CJ API`);
-                    break;
-                }
-
-                // 添加到总结果中
-                allProducts.push(...products);
+                // 创建异步任务
+                const pageTask = this.fetchCJPageData(apiUrl, query, pageCount + 1);
+                concurrentPageTasks.push(pageTask);
                 pageCount++;
-
-                // 检查是否还有更多数据
-                if (products.length < currentLimit) {
-                    logger.info(`Received fewer products than requested, likely reached end of data`);
-                    break;
-                }
-
-                // 添加延迟以避免API限制
-                if (pageCount < paginationPlan.totalPages && pageCount < maxPages) {
-                    await new Promise(resolve => setTimeout(resolve, cjApiLimitChecker.getRequestDelay()));
-                }
             }
 
-            logger.info(`CJ API total fetched: ${allProducts.length} products from ${pageCount} pages`);
+            logger.info(`Executing ${concurrentPageTasks.length} concurrent CJ API page requests...`);
+            
+            // 并发执行所有页面请求
+            const pageResults = await Promise.allSettled(concurrentPageTasks);
+            
+            let allProducts: any[] = [];
+            let successfulPages = 0;
+            
+            pageResults.forEach((result, index) => {
+                if (result.status === 'fulfilled') {
+                    allProducts.push(...result.value);
+                    successfulPages++;
+                    logger.debug(`CJ API page ${index + 1} succeeded with ${result.value.length} products`);
+                } else {
+                    logger.warn(`CJ API page ${index + 1} failed:`, result.reason);
+                }
+            });
+
+            logger.info(`CJ API concurrent fetch completed: ${allProducts.length} products from ${successfulPages}/${concurrentPageTasks.length} successful pages`);
 
             // 处理和过滤产品
             if (allProducts.length > 0) {
@@ -514,6 +492,15 @@ export class ProductRetriever {
                 let skippedNoData = 0;
                 let skippedInvalidImage = 0;
                 let skippedOtherReasons = 0;
+
+                // 去重产品
+                const uniqueProducts = new Map();
+                allProducts.forEach(product => {
+                    if (!uniqueProducts.has(product.id)) {
+                        uniqueProducts.set(product.id, product);
+                    }
+                });
+                allProducts = Array.from(uniqueProducts.values());
 
                 for (const cjProduct of allProducts) {
                     if (count >= limit) break;
@@ -591,6 +578,45 @@ export class ProductRetriever {
 
         logger.info(`Fetched and converted ${unifiedProducts.length} products from CJ`);
         return unifiedProducts;
+    }
+
+    /**
+     * 获取单个CJ API页面数据
+     */
+    private async fetchCJPageData(apiUrl: string, query: string, pageNumber: number): Promise<any[]> {
+        try {
+            logger.debug(`CJ API request page ${pageNumber}`);
+            logger.debug(`CJ API query:`, query);
+
+            const response = await axios.post(apiUrl,
+                { query },
+                {
+                    headers: {
+                        'Authorization': `Bearer ${process.env.CJ_API_TOKEN}`,
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: cjApiLimitChecker.getTimeout()
+                }
+            );
+
+            logger.debug(`CJ API response status for page ${pageNumber}: ${response.status}`);
+
+            if (response.data?.errors) {
+                logger.error(`CJ API returned errors for page ${pageNumber}:`, response.data.errors);
+                return [];
+            }
+
+            const products = response.data?.data?.products?.resultList || [];
+            const totalCount = response.data?.data?.products?.totalCount || 0;
+
+            logger.debug(`CJ API page ${pageNumber} response: returned ${products.length} products, total available: ${totalCount}`);
+
+            return products;
+
+        } catch (error: any) {
+            logger.error(`Error fetching CJ API page ${pageNumber}:`, error);
+            return [];
+        }
     }
 
     /**
@@ -791,7 +817,7 @@ export class ProductRetriever {
     }
 
     /**
-     * 从Pepperjam API获取产品
+     * 从Pepperjam API获取产品 - 优化版，支持并发处理
      */
     async fetchPepperjamProducts(params: PepperjamFetchParams): Promise<UnifiedProduct[]> {
         const { programId, keywords = [], limit = 75 } = params;
@@ -801,73 +827,125 @@ export class ProductRetriever {
         const unifiedProducts: UnifiedProduct[] = [];
         const seenProductIds = new Set<string>();
 
-        // API调用关键词列表
-        const apiCallKeywords: (string | null)[] = keywords.length > 0 ? keywords : [null];
+        try {
+            // 创建并发任务数组
+            const concurrentTasks: Promise<{ keyword: string | null, products: any[] }>[] = [];
 
-        for (const keyword of apiCallKeywords) {
-            try {
-                const apiUrl = 'https://api.pepperjamnetwork.com/20120402/publisher/creative/product';
-                const params: any = {
-                    apiKey: process.env.ASCEND_API_KEY || process.env.PEPPERJAM_API_KEY,
-                    format: 'json',
-                    programIds: programId,
-                    page: 1,
-                    limit: 50
-                };
+            // API调用关键词列表
+            const apiCallKeywords: (string | null)[] = keywords.length > 0 ? keywords : [null];
 
-                if (keyword) {
-                    params.keywords = keyword;
-                }
-
-                logger.debug(`Pepperjam API call: ${apiUrl} with params:`, params);
-
-                const response = await axios.get(apiUrl, {
-                    params,
-                    timeout: 30000
-                });
-
-                logger.debug(`Pepperjam API response status: ${response.status}`);
-                logger.debug(`Pepperjam API response structure:`, {
-                    hasData: !!response.data,
-                    hasMeta: !!response.data?.meta,
-                    hasStatus: !!response.data?.meta?.status,
-                    statusCode: response.data?.meta?.status?.code,
-                    hasDataArray: !!response.data?.data,
-                    dataLength: response.data?.data?.length || 0
-                });
-
-                if (response.data?.meta?.status?.code === 200 && response.data.data) {
-                    logger.debug(`Pepperjam API call successful (keyword: '${keyword || 'none'}'), returned ${response.data.data.length} products`);
-
-                    for (const pjProduct of response.data.data) {
-                        const identifier = pjProduct.id || pjProduct.name;
-                        if (identifier && !seenProductIds.has(identifier)) {
-                            if (keyword) {
-                                pjProduct._fetched_by_keyword = keyword;
-                            }
-
-                            const unifiedProduct = await this.pepperjamProductToUnified(pjProduct, programId, programId);
-                            if (unifiedProduct) {
-                                if (keyword) {
-                                    unifiedProduct.keywordsMatched = [keyword];
-                                }
-                                unifiedProducts.push(unifiedProduct);
-                                seenProductIds.add(identifier);
-                            }
-                        }
-                    }
-                } else {
-                    const statusCode = response.data?.meta?.status?.code || 'N/A';
-                    const message = response.data?.meta?.status?.message || 'No data returned';
-                    logger.warn(`Pepperjam API failed for program ${programId}, keyword '${keyword || 'none'}'. Status: ${statusCode}, Message: ${message}`);
-                }
-            } catch (error) {
-                logger.error(`Pepperjam API call error (keyword: '${keyword || 'none'}') for program ${programId}:`, error);
+            // 为每个关键词（或无关键词）创建并发任务
+            for (const keyword of apiCallKeywords) {
+                const task = this.fetchPepperjamKeywordData(programId, keyword, limit);
+                concurrentTasks.push(task);
             }
+
+            // 如果有关键词，同时添加一个无关键词的通用搜索
+            if (keywords.length > 0) {
+                const generalTask = this.fetchPepperjamKeywordData(programId, null, Math.floor(limit * 0.3));
+                concurrentTasks.push(generalTask);
+            }
+
+            logger.info(`Executing ${concurrentTasks.length} concurrent Pepperjam API tasks...`);
+
+            // 并发执行所有任务
+            const results = await Promise.allSettled(concurrentTasks);
+
+            // 处理结果
+            let allProducts: any[] = [];
+            results.forEach((result, index) => {
+                if (result.status === 'fulfilled') {
+                    const { keyword, products } = result.value;
+                    allProducts.push(...products);
+                    logger.info(`Pepperjam task ${index + 1} (keyword: '${keyword || 'none'}') succeeded with ${products.length} products`);
+                } else {
+                    logger.warn(`Pepperjam task ${index + 1} failed:`, result.reason);
+                }
+            });
+
+            // 去重和处理产品
+            for (const pjProduct of allProducts) {
+                const identifier = pjProduct.id || pjProduct.name;
+                if (identifier && !seenProductIds.has(identifier) && unifiedProducts.length < limit) {
+                    const unifiedProduct = await this.pepperjamProductToUnified(pjProduct, programId, programId);
+                    if (unifiedProduct) {
+                        // 检查关键词匹配
+                        if (keywords.length > 0) {
+                            const title = (pjProduct.name || '').toLowerCase();
+                            const description = (pjProduct.description_long || pjProduct.description_short || '').toLowerCase();
+                            const matchedKeywords: string[] = [];
+
+                            for (const phrase of keywords) {
+                                const phraseLower = phrase.toLowerCase();
+                                if (title.includes(phraseLower) || description.includes(phraseLower)) {
+                                    matchedKeywords.push(phrase);
+                                }
+                            }
+                            unifiedProduct.keywordsMatched = matchedKeywords;
+                        }
+
+                        unifiedProducts.push(unifiedProduct);
+                        seenProductIds.add(identifier);
+                    }
+                }
+            }
+
+            logger.info(`Fetched and converted ${unifiedProducts.length} unique products from ${concurrentTasks.length} concurrent Pepperjam tasks`);
+
+        } catch (error) {
+            logger.error(`Error in concurrent Pepperjam fetch for program ${programId}:`, error);
         }
 
-        logger.info(`Fetched and converted ${unifiedProducts.length} products from Pepperjam (target: ${limit})`);
-        return unifiedProducts.slice(0, limit);
+        return unifiedProducts;
+    }
+
+    /**
+     * 获取特定关键词的Pepperjam产品数据
+     */
+    private async fetchPepperjamKeywordData(programId: string, keyword: string | null, limit: number): Promise<{ keyword: string | null, products: any[] }> {
+        try {
+            const apiUrl = 'https://api.pepperjamnetwork.com/20120402/publisher/creative/product';
+            const params: any = {
+                apiKey: process.env.ASCEND_API_KEY || process.env.PEPPERJAM_API_KEY,
+                format: 'json',
+                programIds: programId,
+                page: 1,
+                limit: Math.min(limit, 100)
+            };
+
+            if (keyword) {
+                params.keywords = keyword;
+            }
+
+            logger.debug(`Pepperjam API call for program ${programId}, keyword: '${keyword || 'none'}', limit: ${params.limit}`);
+
+            const response = await axios.get(apiUrl, {
+                params,
+                timeout: 30000
+            });
+
+            if (response.data?.meta?.status?.code === 200 && response.data.data) {
+                const products = response.data.data || [];
+                
+                // 为产品添加获取关键词标记
+                products.forEach((product: any) => {
+                    if (keyword) {
+                        product._fetched_by_keyword = keyword;
+                    }
+                });
+
+                logger.debug(`Pepperjam API successful for keyword '${keyword || 'none'}', returned ${products.length} products`);
+                return { keyword, products };
+            } else {
+                const statusCode = response.data?.meta?.status?.code || 'N/A';
+                const message = response.data?.meta?.status?.message || 'No data returned';
+                logger.warn(`Pepperjam API failed for program ${programId}, keyword '${keyword || 'none'}'. Status: ${statusCode}, Message: ${message}`);
+                return { keyword, products: [] };
+            }
+        } catch (error) {
+            logger.error(`Pepperjam API call error (keyword: '${keyword || 'none'}') for program ${programId}:`, error);
+            return { keyword, products: [] };
+        }
     }
 
     /**
