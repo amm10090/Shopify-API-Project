@@ -481,11 +481,11 @@ const ImportPage: React.FC<ImportPageProps> = ({ showToast, setIsLoading }) => {
                             
                             <Banner tone="success">
                                 <BlockStack gap="200">
-                                    <Text as="p" variant="bodyMd"><strong>产品显示说明：</strong></Text>
+                                    <Text as="p" variant="bodyMd"><strong>Product Display Instructions:</strong></Text>
                                     <ul style={{ paddingLeft: '20px', margin: 0 }}>
-                                        <li><strong>抓取数量</strong>：您在搜索表单中设置的数量（如50个）是从API抓取并保存到数据库的产品总数</li>
-                                        <li><strong>页面显示</strong>：产品管理页面默认分页显示，每页50个产品。您可以通过页面底部的"每页显示项目数"来调整</li>
-                                        <li><strong>查看所有产品</strong>：所有抓取的产品都已保存，可以通过翻页或调整每页显示数量来查看全部</li>
+                                        <li><strong>Fetched Quantity</strong>: The quantity you set in the search form (e.g., 50) is the total number of products fetched from the API and saved to the database</li>
+                                        <li><strong>Page Display</strong>: The product management page displays paginated results by default, with 50 products per page. You can adjust this through the "Items per page" setting at the bottom of the page</li>
+                                        <li><strong>View All Products</strong>: All fetched products have been saved and can be viewed by navigating through pages or adjusting the number of items displayed per page</li>
                                     </ul>
                                 </BlockStack>
                             </Banner>
