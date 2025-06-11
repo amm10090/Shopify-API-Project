@@ -126,19 +126,19 @@ const ImportDebugPanel: React.FC<ImportDebugPanelProps> = ({
                                 <Text as="h3" variant="headingSm">System Status</Text>
                                 <InlineStack gap="300" wrap>
                                     <Badge tone={getStatusColor(debugStats.stuckTasks, 2)}>
-                                        Stuck Tasks: {debugStats.stuckTasks.toString()}
+                                        {`Stuck Tasks: ${debugStats.stuckTasks}`}
                                     </Badge>
-                                    <Badge tone={debugStats.activePolls > 0 ? 'info' : 'subdued'}>
-                                        Active Polls: {debugStats.activePolls.toString()}
-                                    </Badge>
-                                    <Badge>
-                                        Total Tasks: {debugStats.totalTasks.toString()}
+                                    <Badge tone={debugStats.activePolls > 0 ? 'info' : undefined}>
+                                        {`Active Polls: ${debugStats.activePolls}`}
                                     </Badge>
                                     <Badge>
-                                        History Items: {debugStats.historyCount.toString()}
+                                        {`Total Tasks: ${debugStats.totalTasks}`}
+                                    </Badge>
+                                    <Badge>
+                                        {`History Items: ${debugStats.historyCount}`}
                                     </Badge>
                                     <Badge tone={getStatusColor(debugStats.totalRetries, 5)}>
-                                        Total Retries: {debugStats.totalRetries.toString()}
+                                        {`Total Retries: ${debugStats.totalRetries}`}
                                     </Badge>
                                 </InlineStack>
                                 
