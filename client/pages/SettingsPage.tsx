@@ -522,7 +522,7 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ showToast }) => {
     const handleGlobalStatusSync = useCallback(async () => {
         setSavingSettings(true);
         try {
-            const response = await shopifyApi.syncProductStatus();
+            const response = await shopifyApi.syncProductStatus([]);
 
             if (response.success) {
                 const { checked, stillExists, deleted, updated } = response.data;
